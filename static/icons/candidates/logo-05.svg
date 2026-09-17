@@ -1,0 +1,13 @@
+<!-- play button inside a tick-marked dial ring -->
+<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="12" cy="12" r="9.5" fill="#ff8a3d" fill-opacity="0.1" stroke="#ff8a3d" stroke-width="1.4"/>
+  <g stroke="#ff8a3d" stroke-width="1.1" stroke-linecap="round" opacity="0.4">
+    <line x1="12" y1="2.3" x2="12" y2="3.6"/>
+    <line x1="12" y1="2.3" x2="12" y2="3.6" transform="rotate(60 12 12)"/>
+    <line x1="12" y1="2.3" x2="12" y2="3.6" transform="rotate(120 12 12)"/>
+    <line x1="12" y1="2.3" x2="12" y2="3.6" transform="rotate(180 12 12)"/>
+    <line x1="12" y1="2.3" x2="12" y2="3.6" transform="rotate(240 12 12)"/>
+    <line x1="12" y1="2.3" x2="12" y2="3.6" transform="rotate(300 12 12)"/>
+  </g>
+  <path d="M10 8.3v7.4a.8.8 0 0 0 1.2.7l6-3.7a.8.8 0 0 0 0-1.4l-6-3.7a.8.8 0 0 0-1.2.7Z" fill="#ff8a3d"/>
+</svg>

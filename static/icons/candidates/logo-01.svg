@@ -1,0 +1,15 @@
+<!-- note-in-dial: beamed eighth notes inside a tick-marked dial bezel -->
+<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="12" cy="12" r="9.5" fill="#ff8a3d" fill-opacity="0.12" stroke="#ff8a3d" stroke-width="1.4"/>
+  <g stroke="#ff8a3d" stroke-width="1.1" stroke-linecap="round" opacity="0.4">
+    <line x1="12" y1="2.3" x2="12" y2="3.6"/>
+    <line x1="21.7" y1="12" x2="20.4" y2="12"/>
+    <line x1="12" y1="21.7" x2="12" y2="20.4"/>
+    <line x1="2.3" y1="12" x2="3.6" y2="12"/>
+  </g>
+  <g transform="translate(4.6 4.6) scale(0.62)">
+    <path d="M9 18V5l12-2v13" fill="none" stroke="#ff8a3d" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="6" cy="18" r="3" fill="#ff8a3d"/>
+    <circle cx="18" cy="16" r="3" fill="#ff8a3d"/>
+  </g>
+</svg>

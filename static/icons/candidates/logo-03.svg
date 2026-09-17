@@ -1,0 +1,14 @@
+<!-- radial EQ burst: alternating bar lengths radiating from a hub -->
+<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="12" cy="12" r="2.2" fill="#ff8a3d"/>
+  <g stroke="#ff8a3d" stroke-linecap="round">
+    <line x1="12" y1="7.5" x2="12" y2="3" stroke-width="1.8"/>
+    <line x1="12" y1="7.5" x2="12" y2="4.5" stroke-width="1.4" opacity="0.7" transform="rotate(45 12 12)"/>
+    <line x1="12" y1="7.5" x2="12" y2="3" stroke-width="1.8" transform="rotate(90 12 12)"/>
+    <line x1="12" y1="7.5" x2="12" y2="4.5" stroke-width="1.4" opacity="0.7" transform="rotate(135 12 12)"/>
+    <line x1="12" y1="7.5" x2="12" y2="3" stroke-width="1.8" transform="rotate(180 12 12)"/>
+    <line x1="12" y1="7.5" x2="12" y2="4.5" stroke-width="1.4" opacity="0.7" transform="rotate(225 12 12)"/>
+    <line x1="12" y1="7.5" x2="12" y2="3" stroke-width="1.8" transform="rotate(270 12 12)"/>
+    <line x1="12" y1="7.5" x2="12" y2="4.5" stroke-width="1.4" opacity="0.7" transform="rotate(315 12 12)"/>
+  </g>
+</svg>

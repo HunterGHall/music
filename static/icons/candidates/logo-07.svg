@@ -1,0 +1,13 @@
+<!-- VU-meter / tuner needle over an arc scale -->
+<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <path d="M3 16a9 9 0 0 1 18 0" fill="none" stroke="#ff8a3d" stroke-width="1.6" stroke-linecap="round"/>
+  <g stroke="#ff8a3d" stroke-width="1" opacity="0.5" stroke-linecap="round">
+    <line x1="5.5" y1="11.5" x2="6.4" y2="12.6"/>
+    <line x1="9" y1="8.3" x2="9.6" y2="9.6"/>
+    <line x1="12" y1="7" x2="12" y2="8.4"/>
+    <line x1="15" y1="8.3" x2="14.4" y2="9.6"/>
+    <line x1="18.5" y1="11.5" x2="17.6" y2="12.6"/>
+  </g>
+  <line x1="12" y1="16" x2="9" y2="10.5" stroke="#ff8a3d" stroke-width="1.8" stroke-linecap="round"/>
+  <circle cx="12" cy="16" r="1.4" fill="#ff8a3d"/>
+</svg>
