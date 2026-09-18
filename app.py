@@ -245,6 +245,42 @@ def _ydl_opts(hook, **extra):
     }, yt_dlp
 
 
+def _youtube_track_fields(info):
+    """Best-effort (title, artist) for a yt-dlp info_dict. Prefers YouTube's
+    own "Music in this video" metadata (artist/track), which is far more
+    reliable than the raw video title, then falls back to the uploading
+    channel's name - a good guess for artist-run channels, a weaker one
+    otherwise, but better than no artist at all."""
+    title = (info.get("track") or info.get("title") or "").strip()
+    artist = (info.get("artist") or info.get("creator")
+              or info.get("channel") or info.get("uploader") or "").strip()
+    if artist and " - " in title and title.split(" - ", 1)[0].strip().lower() == artist.lower():
+        title = title.split(" - ", 1)[1].strip()
+    return title, artist
+
+
+def _rename_with_artist(path, title, artist):
+    """Renames a downloaded file to the "Artist - Title" convention
+    _track_fields() parses artist/title from, moving its cover art along
+    with it. No-ops (returns path/title unchanged) when no artist is known.
+    Returns (final_path, display_name)."""
+    if not artist:
+        return path, title
+    display_name = f"{artist} - {title}"
+    final = path.with_name(_sanitize_filename(display_name) + path.suffix)
+    if final.resolve() != path.resolve():
+        if final.exists():
+            final.unlink()
+        path.rename(final)
+        old_cover = _cover_path_for(path)
+        if old_cover.is_file():
+            new_cover = _cover_path_for(final)
+            if new_cover.exists():
+                new_cover.unlink()
+            old_cover.rename(new_cover)
+    return final, display_name
+
+
 def _download_youtube(url, hook):
     """Downloads a single video, ignoring any ?list= playlist it's part of
     (playlist imports go through _download_youtube_playlist instead).
@@ -253,10 +289,12 @@ def _download_youtube(url, hook):
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
     path = _final_path(ydl, info)
+    title, artist = _youtube_track_fields(info)
+    final, display_name = _rename_with_artist(path, title or path.stem, artist)
     thumb = info.get("thumbnail")
     if thumb:
-        _download_image(thumb, _cover_path_for(path))
-    return path, info.get("title") or path.stem
+        _download_image(thumb, _cover_path_for(final))
+    return final, display_name
 
 
 def _download_youtube_playlist(url, progress_hook, on_track):
@@ -272,10 +310,12 @@ def _download_youtube_playlist(url, progress_hook, on_track):
         if d.get("status") == "finished" and d.get("postprocessor") == "MoveFiles":
             info = d["info_dict"]
             path = Path(info["filepath"])
+            title, artist = _youtube_track_fields(info)
+            final, display_name = _rename_with_artist(path, title or path.stem, artist)
             thumb = info.get("thumbnail")
             if thumb:
-                _download_image(thumb, _cover_path_for(path))
-            on_track(path, info.get("title") or path.stem)
+                _download_image(thumb, _cover_path_for(final))
+            on_track(final, display_name)
 
     opts, yt_dlp = _ydl_opts(progress_hook, noplaylist=False, ignoreerrors=True)
     opts["postprocessor_hooks"] = [pp_hook]
