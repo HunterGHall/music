@@ -604,7 +604,7 @@
 
   function goPrev() {
     if (state.queue.length === 0) return;
-    if (audio.currentTime > 3) {
+    if (audio.currentTime > 5) {
       audio.currentTime = 0;
       return;
     }
