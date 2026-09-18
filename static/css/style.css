@@ -592,6 +592,7 @@ input {
 
 #repeat-btn.active { color: var(--accent); }
 #repeat-btn { position: relative; }
+#shuffle-btn.active { color: var(--accent); }
 #repeat-one-dot {
   position: absolute;
   bottom: 4px;

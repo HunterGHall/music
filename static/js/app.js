@@ -11,6 +11,9 @@
     queueIndex: -1,
     repeat: "off",       // off | all | one
     searchQuery: "",
+    shuffle: false,
+    shuffleOrder: [],    // permutation of indices into state.queue
+    shufflePos: -1,      // current position within shuffleOrder
   };
 
   const audio = new Audio();
@@ -44,6 +47,7 @@
   const npTitle = document.getElementById("np-title");
   const npArtist = document.getElementById("np-artist");
 
+  const shuffleBtn = document.getElementById("shuffle-btn");
   const prevBtn = document.getElementById("prev-btn");
   const playBtn = document.getElementById("play-btn");
   const nextBtn = document.getElementById("next-btn");
@@ -265,6 +269,7 @@
     const playingId = state.queue[state.queueIndex] ? state.queue[state.queueIndex].id : null;
     state.queue = tracks;
     state.queueIndex = playingId ? tracks.findIndex((t) => t.id === playingId) : -1;
+    if (state.shuffle) regenerateShuffleOrder();
 
     trackListEl.innerHTML = "";
     setHidden(emptyStateEl, tracks.length > 0);
@@ -496,9 +501,44 @@
 
   // ---------------- playback engine ----------------
 
+  function shuffledIndices(length) {
+    const order = Array.from({ length }, (_, i) => i);
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [order[i], order[j]] = [order[j], order[i]];
+    }
+    return order;
+  }
+
+  // Rebuilds the shuffle play-order for the current queue, keeping whatever
+  // is currently playing as the starting point so toggling shuffle on (or
+  // re-filtering the view) doesn't change what's playing.
+  function regenerateShuffleOrder() {
+    const order = shuffledIndices(state.queue.length);
+    if (state.queueIndex !== -1) {
+      const pos = order.indexOf(state.queueIndex);
+      if (pos > 0) [order[0], order[pos]] = [order[pos], order[0]];
+      state.shufflePos = 0;
+    } else {
+      state.shufflePos = -1;
+    }
+    state.shuffleOrder = order;
+  }
+
+  function toggleShuffle() {
+    state.shuffle = !state.shuffle;
+    shuffleBtn.classList.toggle("active", state.shuffle);
+    shuffleBtn.title = state.shuffle ? "Shuffle on" : "Shuffle off";
+    if (state.shuffle) regenerateShuffleOrder();
+  }
+
   function playQueueAt(index) {
     if (index < 0 || index >= state.queue.length) return;
     state.queueIndex = index;
+    if (state.shuffle) {
+      const pos = state.shuffleOrder.indexOf(index);
+      state.shufflePos = pos !== -1 ? pos : 0;
+    }
     const track = state.queue[index];
     audio.src = `/audio/${encodeURIComponent(track.id)}`;
     audio.currentTime = 0;
@@ -538,6 +578,22 @@
       playQueueAt(state.queueIndex);
       return;
     }
+    if (state.shuffle) {
+      let pos = state.shufflePos + 1;
+      if (pos >= state.shuffleOrder.length) {
+        if (state.repeat !== "all") return;
+        const lastIndex = state.shuffleOrder[state.shuffleOrder.length - 1];
+        const order = shuffledIndices(state.queue.length);
+        if (order.length > 1 && order[0] === lastIndex) {
+          [order[0], order[1]] = [order[1], order[0]];
+        }
+        state.shuffleOrder = order;
+        pos = 0;
+      }
+      state.shufflePos = pos;
+      playQueueAt(state.shuffleOrder[pos]);
+      return;
+    }
     let next = state.queueIndex + 1;
     if (next >= state.queue.length) {
       if (state.repeat === "all") next = 0;
@@ -552,6 +608,13 @@
       audio.currentTime = 0;
       return;
     }
+    if (state.shuffle) {
+      let pos = state.shufflePos - 1;
+      if (pos < 0) pos = state.repeat === "all" ? state.shuffleOrder.length - 1 : 0;
+      state.shufflePos = pos;
+      playQueueAt(state.shuffleOrder[pos]);
+      return;
+    }
     let prev = state.queueIndex - 1;
     if (prev < 0) prev = state.repeat === "all" ? state.queue.length - 1 : 0;
     playQueueAt(prev);
@@ -564,6 +627,7 @@
     setHidden(repeatOneDot, state.repeat !== "one");
   }
 
+  shuffleBtn.addEventListener("click", toggleShuffle);
   prevBtn.addEventListener("click", goPrev);
   nextBtn.addEventListener("click", () => goNext(false));
   playBtn.addEventListener("click", playPause);
