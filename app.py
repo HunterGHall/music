@@ -17,6 +17,7 @@ LIBRARY_DIR = BASE_DIR / "library"
 COVERS_DIR = LIBRARY_DIR / "covers"
 DATA_DIR = BASE_DIR / "data"
 PLAYLISTS_FILE = DATA_DIR / "playlists.json"
+STATS_FILE = DATA_DIR / "stats.json"
 STATIC_DIR = BASE_DIR / "static"
 AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".flac", ".ogg", ".opus", ".aac")
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -77,7 +78,7 @@ def _cover_path_for(audio_path):
     return COVERS_DIR / (audio_path.stem + ".jpg")
 
 
-def _track_to_dict(path):
+def _track_to_dict(path, stats=None):
     title, artist, duration = _track_fields(path)
     cover = _cover_path_for(path)
     return {
@@ -86,11 +87,36 @@ def _track_to_dict(path):
         "artist": artist,
         "duration": duration,
         "cover": f"/covers/{cover.name}" if cover.is_file() else None,
+        "plays": (stats or {}).get(path.name, 0),
     }
 
 
 def _sanitize_filename(name):
     return re.sub(r'[\\/:*?"<>|]', "_", name).strip() or "track"
+
+
+# ---------------- play-count stats ----------------
+
+def _load_stats():
+    if not STATS_FILE.is_file():
+        return {}
+    try:
+        return json.loads(STATS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_stats(stats):
+    DATA_DIR.mkdir(exist_ok=True)
+    STATS_FILE.write_text(json.dumps(stats, indent=2), encoding="utf-8")
+
+
+def _record_play(track_id):
+    with _lock:
+        stats = _load_stats()
+        stats[track_id] = stats.get(track_id, 0) + 1
+        _save_stats(stats)
+        return stats[track_id]
 
 
 # ---------------- playlists persistence ----------------
@@ -394,7 +420,13 @@ def serve_audio(name):
 
 @app.get("/api/library")
 def api_library():
-    return jsonify([_track_to_dict(p) for p in find_track_paths()])
+    stats = _load_stats()
+    return jsonify([_track_to_dict(p, stats) for p in find_track_paths()])
+
+
+@app.post("/api/tracks/<path:track_id>/play")
+def api_record_play(track_id):
+    return jsonify({"plays": _record_play(track_id)})
 
 
 @app.delete("/api/tracks/<path:track_id>")
@@ -410,6 +442,11 @@ def api_delete_track(track_id):
         for pl in playlists:
             pl["track_ids"] = [t for t in pl["track_ids"] if t != track_id]
         _save_playlists(playlists)
+    with _lock:
+        stats = _load_stats()
+        if track_id in stats:
+            del stats[track_id]
+            _save_stats(stats)
     return "", 204
 
 

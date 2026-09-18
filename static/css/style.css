@@ -280,6 +280,155 @@ input {
   height: 12px;
 }
 
+/* ---------------- dashboard page ---------------- */
+
+.dashboard-page {
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.dash-section h2 {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 14px;
+}
+
+.dash-empty-hint {
+  font-size: 12.5px;
+  color: var(--text-faint);
+  margin: 0 0 4px;
+}
+
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 20px;
+}
+
+.tile-grid-small {
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px;
+  max-width: 660px;
+}
+
+.tile-grid-small .tile-name {
+  font-size: 12.5px;
+}
+
+.tile-grid-small .tile-sub {
+  font-size: 11px;
+}
+
+.tile {
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tile-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  margin: -6px;
+  border-radius: var(--radius-md);
+  transition: background 0.15s ease;
+}
+
+.tile-row:hover {
+  background: var(--bg-hover);
+}
+
+.tile-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tile-text .tile-name {
+  transition: color 0.15s ease;
+}
+
+.tile-row:hover .tile-text .tile-name {
+  color: var(--accent);
+}
+
+.tile-art {
+  aspect-ratio: 1;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg);
+  position: relative;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.tile:hover .tile-art {
+  transform: scale(1.03);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.tile-row:hover .tile-art {
+  transform: none;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4);
+}
+
+.tile-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.tile-art-sm {
+  width: 44px;
+  height: 44px;
+  aspect-ratio: unset;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+}
+
+.tile-art-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+.tile-art-empty {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+}
+
+.tile-art-empty svg {
+  width: 32%;
+  height: 32%;
+}
+
+.tile-name {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tile-sub {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ---------------- add music page ---------------- */
 
 .add-page {

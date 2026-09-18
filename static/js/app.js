@@ -6,7 +6,7 @@
   const state = {
     library: [],       // all tracks in the local library
     playlists: [],      // [{id, name, track_ids}]
-    view: { type: "home" },  // {type:"home"} | {type:"playlist", id} | {type:"add"}
+    view: { type: "dashboard" },  // {type:"dashboard"} | {type:"library"} | {type:"playlist", id} | {type:"add"}
     queue: [],          // tracks currently shown / playable in order
     queueIndex: -1,
     repeat: "off",       // off | all | one
@@ -21,7 +21,8 @@
 
   // ---------------- dom refs ----------------
 
-  const navHome = document.getElementById("nav-home");
+  const navDashboard = document.getElementById("nav-dashboard");
+  const navLibrary = document.getElementById("nav-library");
   const navAdd = document.getElementById("nav-add");
   const playlistListEl = document.getElementById("playlist-list");
   const newPlaylistBtn = document.getElementById("new-playlist-btn");
@@ -30,6 +31,11 @@
   const emptyStateEl = document.getElementById("empty-state");
   const statusLine = document.getElementById("status-line");
   const addPageEl = document.getElementById("add-page");
+  const dashboardPageEl = document.getElementById("dashboard-page");
+  const dashboardPlaylistsGrid = document.getElementById("dashboard-playlists-grid");
+  const dashboardPlaylistsEmpty = document.getElementById("dashboard-playlists-empty");
+  const mostPlayedGrid = document.getElementById("most-played-grid");
+  const mostPlayedEmpty = document.getElementById("most-played-empty");
   const searchBox = document.getElementById("search-box");
   const searchInput = document.getElementById("search-input");
   const searchClearBtn = document.getElementById("search-clear");
@@ -139,7 +145,8 @@
   // ---------------- rendering: sidebar ----------------
 
   function renderSidebar() {
-    navHome.classList.toggle("active", state.view.type === "home");
+    navDashboard.classList.toggle("active", state.view.type === "dashboard");
+    navLibrary.classList.toggle("active", state.view.type === "library");
     navAdd.classList.toggle("active", state.view.type === "add");
 
     playlistListEl.innerHTML = "";
@@ -180,7 +187,7 @@
           await api("DELETE", `/api/playlists/${pl.id}`);
           await loadPlaylists();
           if (state.view.type === "playlist" && state.view.id === pl.id) {
-            openHome();
+            openDashboard();
           } else {
             renderSidebar();
           }
@@ -247,18 +254,30 @@
     if (state.view.type === "add") {
       viewTitle.textContent = "Add Music";
       setHidden(searchBox, true);
+      setHidden(dashboardPageEl, true);
       setHidden(addPageEl, false);
       setHidden(trackListEl, true);
       setHidden(emptyStateEl, true);
       return;
     }
+    if (state.view.type === "dashboard") {
+      viewTitle.textContent = "Home";
+      setHidden(searchBox, true);
+      setHidden(addPageEl, true);
+      setHidden(trackListEl, true);
+      setHidden(emptyStateEl, true);
+      setHidden(dashboardPageEl, false);
+      renderDashboard();
+      return;
+    }
     setHidden(searchBox, false);
     setHidden(addPageEl, true);
+    setHidden(dashboardPageEl, true);
     setHidden(trackListEl, false);
 
     viewTitle.textContent = state.view.type === "playlist"
       ? (currentPlaylist() ? currentPlaylist().name : "Playlist")
-      : "Home";
+      : "All Songs";
 
     const allTracks = tracksForView();
     const query = state.searchQuery.trim().toLowerCase();
@@ -276,7 +295,7 @@
     emptyStateEl.querySelector("p").textContent = query
       ? `No matches for "${state.searchQuery.trim()}".`
       : state.view.type === "playlist"
-        ? "This playlist is empty. Add tracks from Home."
+        ? "This playlist is empty. Add tracks from All Songs."
         : "Your library is empty — go to Add Music to download something.";
 
     tracks.forEach((track, index) => {
@@ -383,6 +402,112 @@
     });
   }
 
+  // ---------------- rendering: dashboard ----------------
+
+  const TILE_FALLBACK_ICON = '<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6" cy="18" r="3" stroke="currentColor" stroke-width="1.6" fill="none"/><circle cx="18" cy="16" r="3" stroke="currentColor" stroke-width="1.6" fill="none"/></svg>';
+
+  function buildTileArt(covers) {
+    const art = document.createElement("div");
+    art.className = "tile-art";
+    if (covers.length >= 4) {
+      art.classList.add("tile-art-grid");
+      covers.slice(0, 4).forEach((src) => {
+        const img = document.createElement("img");
+        img.src = src;
+        img.alt = "";
+        art.appendChild(img);
+      });
+    } else if (covers.length >= 1) {
+      const img = document.createElement("img");
+      img.src = covers[0];
+      img.alt = "";
+      art.appendChild(img);
+    } else {
+      art.classList.add("tile-art-empty");
+      art.innerHTML = TILE_FALLBACK_ICON;
+    }
+    return art;
+  }
+
+  // Picks the covers to show on a playlist tile: 4 distinct covers in a
+  // 2x2 grid if the playlist has that much variety, otherwise just the
+  // single most-used cover among its tracks (Spotify's auto-cover rule).
+  function playlistTileCovers(playlist) {
+    const counts = new Map();
+    for (const id of playlist.track_ids) {
+      const track = trackById(id);
+      if (!track || !track.cover) continue;
+      counts.set(track.cover, (counts.get(track.cover) || 0) + 1);
+    }
+    const distinct = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([cover]) => cover);
+    return distinct.length >= 4 ? distinct.slice(0, 4) : distinct.slice(0, 1);
+  }
+
+  function buildPlaylistTile(playlist) {
+    const tile = document.createElement("div");
+    tile.className = "tile";
+    tile.appendChild(buildTileArt(playlistTileCovers(playlist)));
+
+    const name = document.createElement("div");
+    name.className = "tile-name";
+    name.textContent = playlist.name;
+    const sub = document.createElement("div");
+    sub.className = "tile-sub";
+    sub.textContent = `${playlist.track_ids.length} track${playlist.track_ids.length === 1 ? "" : "s"}`;
+
+    tile.appendChild(name);
+    tile.appendChild(sub);
+    tile.addEventListener("click", () => openPlaylist(playlist.id));
+    return tile;
+  }
+
+  function topPlayedTracks(n) {
+    return [...state.library]
+      .filter((t) => (t.plays || 0) > 0)
+      .sort((a, b) => (b.plays || 0) - (a.plays || 0))
+      .slice(0, n);
+  }
+
+  function buildMostPlayedTile(track, index, topList) {
+    const tile = document.createElement("div");
+    tile.className = "tile tile-row";
+
+    const art = buildTileArt(track.cover ? [track.cover] : []);
+    art.classList.add("tile-art-sm");
+    tile.appendChild(art);
+
+    const text = document.createElement("div");
+    text.className = "tile-text";
+    const name = document.createElement("div");
+    name.className = "tile-name";
+    name.textContent = track.title;
+    const sub = document.createElement("div");
+    sub.className = "tile-sub";
+    sub.textContent = track.artist || "Unknown artist";
+    text.appendChild(name);
+    text.appendChild(sub);
+    tile.appendChild(text);
+
+    tile.addEventListener("click", () => {
+      state.queue = topList;
+      state.queueIndex = -1;
+      if (state.shuffle) regenerateShuffleOrder();
+      playQueueAt(index);
+    });
+    return tile;
+  }
+
+  function renderDashboard() {
+    dashboardPlaylistsGrid.innerHTML = "";
+    setHidden(dashboardPlaylistsEmpty, state.playlists.length > 0);
+    state.playlists.forEach((pl) => dashboardPlaylistsGrid.appendChild(buildPlaylistTile(pl)));
+
+    const top = topPlayedTracks(4);
+    mostPlayedGrid.innerHTML = "";
+    setHidden(mostPlayedEmpty, top.length > 0);
+    top.forEach((track, index) => mostPlayedGrid.appendChild(buildMostPlayedTile(track, index, top)));
+  }
+
   // ---------------- navigation ----------------
 
   function resetSearch() {
@@ -391,8 +516,15 @@
     setHidden(searchClearBtn, true);
   }
 
-  function openHome() {
-    state.view = { type: "home" };
+  function openDashboard() {
+    state.view = { type: "dashboard" };
+    resetSearch();
+    renderSidebar();
+    renderView();
+  }
+
+  function openLibrary() {
+    state.view = { type: "library" };
     resetSearch();
     renderSidebar();
     renderView();
@@ -412,7 +544,8 @@
     renderView();
   }
 
-  navHome.addEventListener("click", openHome);
+  navDashboard.addEventListener("click", openDashboard);
+  navLibrary.addEventListener("click", openLibrary);
   navAdd.addEventListener("click", openAdd);
 
   searchInput.addEventListener("input", () => {
@@ -532,6 +665,11 @@
     if (state.shuffle) regenerateShuffleOrder();
   }
 
+  function recordPlay(track) {
+    track.plays = (track.plays || 0) + 1;
+    api("POST", `/api/tracks/${encodeURIComponent(track.id)}/play`).catch(() => {});
+  }
+
   function playQueueAt(index) {
     if (index < 0 || index >= state.queue.length) return;
     state.queueIndex = index;
@@ -543,6 +681,7 @@
     audio.src = `/audio/${encodeURIComponent(track.id)}`;
     audio.currentTime = 0;
     audio.play().catch(() => {});
+    recordPlay(track);
     updateNowPlayingUI(track);
     updatePlayingHighlight();
   }
@@ -755,7 +894,7 @@
           trackUrlInput.value = "";
           trackAddBtn.disabled = false;
           await loadLibrary();
-          if (state.view.type === "home") renderView();
+          if (state.view.type === "library") renderView();
           resolve();
         } else {
           setAddStatus(`<span class="progress-error">${escapeHtml(job.error || "Download failed")}</span>`);
@@ -830,7 +969,7 @@
         await Promise.all([loadLibrary(), loadPlaylists()]);
         renderSidebar();
         if (state.view.type === "playlist" && state.view.id === job.playlist_id) renderView();
-        if (state.view.type === "home") renderView();
+        if (state.view.type === "library" || state.view.type === "dashboard") renderView();
 
         if (job.status === "done") {
           playlistUrlInput.value = "";
