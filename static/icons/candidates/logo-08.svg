@@ -1,7 +1,0 @@
-<!-- minimal vinyl: ring, spindle hole, single index mark -->
-<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-  <circle cx="12" cy="12" r="9" fill="#ff8a3d" fill-opacity="0.12" stroke="#ff8a3d" stroke-width="1.6"/>
-  <circle cx="12" cy="12" r="2.3" fill="none" stroke="#ff8a3d" stroke-width="1.4"/>
-  <circle cx="12" cy="12" r="0.7" fill="#ff8a3d"/>
-  <line x1="12" y1="3" x2="12" y2="4.6" stroke="#ff8a3d" stroke-width="1.6" stroke-linecap="round"/>
-</svg>

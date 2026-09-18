@@ -1,9 +1,0 @@
-<!-- knob whose pointer ends in an eighth-note flag -->
-<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-  <circle cx="12" cy="13" r="7" fill="#ff8a3d" fill-opacity="0.14" stroke="#ff8a3d" stroke-width="1.6"/>
-  <g transform="rotate(30 12 13)">
-    <line x1="12" y1="13" x2="12" y2="5.5" stroke="#ff8a3d" stroke-width="1.8" stroke-linecap="round"/>
-    <path d="M12 5.5c2 -0.3 3 0.8 2.6 2.4c-0.3 1.1 -1.6 1.6 -2.6 1.1" fill="none" stroke="#ff8a3d" stroke-width="1.4" stroke-linecap="round"/>
-  </g>
-  <circle cx="12" cy="13" r="1.4" fill="#ff8a3d"/>
-</svg>
