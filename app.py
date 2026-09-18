@@ -18,6 +18,8 @@ COVERS_DIR = LIBRARY_DIR / "covers"
 DATA_DIR = BASE_DIR / "data"
 PLAYLISTS_FILE = DATA_DIR / "playlists.json"
 STATS_FILE = DATA_DIR / "stats.json"
+SETTINGS_FILE = DATA_DIR / "settings.json"
+DEFAULT_SETTINGS = {"accent_color": "#ff8a3d", "idle_timeout_minutes": 2}
 STATIC_DIR = BASE_DIR / "static"
 AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".flac", ".ogg", ".opus", ".aac")
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -117,6 +119,24 @@ def _record_play(track_id):
         stats[track_id] = stats.get(track_id, 0) + 1
         _save_stats(stats)
         return stats[track_id]
+
+
+# ---------------- settings ----------------
+
+def _load_settings():
+    settings = dict(DEFAULT_SETTINGS)
+    if SETTINGS_FILE.is_file():
+        try:
+            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            settings.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
+        except Exception:
+            pass
+    return settings
+
+
+def _save_settings(settings):
+    DATA_DIR.mkdir(exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
 
 # ---------------- playlists persistence ----------------
@@ -448,6 +468,32 @@ def api_delete_track(track_id):
             del stats[track_id]
             _save_stats(stats)
     return "", 204
+
+
+# ---------------- routes: settings ----------------
+
+@app.get("/api/settings")
+def api_get_settings():
+    return jsonify(_load_settings())
+
+
+@app.post("/api/settings")
+def api_update_settings():
+    body = request.get_json(silent=True) or {}
+    with _lock:
+        settings = _load_settings()
+        color = body.get("accent_color")
+        if isinstance(color, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            settings["accent_color"] = color
+        if "idle_timeout_minutes" in body:
+            try:
+                minutes = float(body["idle_timeout_minutes"])
+                if 0 < minutes <= 180:
+                    settings["idle_timeout_minutes"] = minutes
+            except (TypeError, ValueError):
+                pass
+        _save_settings(settings)
+    return jsonify(settings)
 
 
 # ---------------- routes: playlists ----------------

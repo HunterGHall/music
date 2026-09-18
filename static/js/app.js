@@ -14,7 +14,11 @@
     shuffle: false,
     shuffleOrder: [],    // permutation of indices into state.queue
     shufflePos: -1,      // current position within shuffleOrder
+    settings: { accent_color: "#ff8a3d", idle_timeout_minutes: 2 },
   };
+
+  let idleHintShown = false;
+  let idleTimerId = null;
 
   const audio = new Audio();
   audio.volume = 0.7;
@@ -39,6 +43,22 @@
   const searchBox = document.getElementById("search-box");
   const searchInput = document.getElementById("search-input");
   const searchClearBtn = document.getElementById("search-clear");
+
+  const navNowPlaying = document.getElementById("nav-nowplaying");
+  const nowPlayingHintDot = document.getElementById("nowplaying-hint-dot");
+  const nowplayingPageEl = document.getElementById("nowplaying-page");
+  const nowplayingEmptyEl = document.getElementById("nowplaying-empty");
+  const nowplayingContentEl = document.getElementById("nowplaying-content");
+  const nowplayingCover = document.getElementById("nowplaying-cover");
+  const nowplayingCoverFallback = document.getElementById("nowplaying-cover-fallback");
+  const nowplayingTitle = document.getElementById("nowplaying-title");
+  const nowplayingArtist = document.getElementById("nowplaying-artist");
+
+  const settingsBtn = document.getElementById("settings-btn");
+  const settingsDropdown = document.getElementById("settings-dropdown");
+  const idleTimeoutInput = document.getElementById("idle-timeout-input");
+  const colorSwatches = document.getElementById("color-swatches");
+  const customColorInput = document.getElementById("custom-color-input");
 
   const trackForm = document.getElementById("track-form");
   const trackUrlInput = document.getElementById("track-url");
@@ -148,6 +168,7 @@
     navDashboard.classList.toggle("active", state.view.type === "dashboard");
     navLibrary.classList.toggle("active", state.view.type === "library");
     navAdd.classList.toggle("active", state.view.type === "add");
+    navNowPlaying.classList.toggle("active", state.view.type === "nowplaying");
 
     playlistListEl.innerHTML = "";
     for (const pl of state.playlists) {
@@ -250,29 +271,38 @@
     return state.library;
   }
 
+  function hideAllPages() {
+    setHidden(searchBox, true);
+    setHidden(dashboardPageEl, true);
+    setHidden(addPageEl, true);
+    setHidden(nowplayingPageEl, true);
+    setHidden(trackListEl, true);
+    setHidden(emptyStateEl, true);
+  }
+
   function renderView() {
     if (state.view.type === "add") {
+      hideAllPages();
       viewTitle.textContent = "Add Music";
-      setHidden(searchBox, true);
-      setHidden(dashboardPageEl, true);
       setHidden(addPageEl, false);
-      setHidden(trackListEl, true);
-      setHidden(emptyStateEl, true);
       return;
     }
     if (state.view.type === "dashboard") {
+      hideAllPages();
       viewTitle.textContent = "Home";
-      setHidden(searchBox, true);
-      setHidden(addPageEl, true);
-      setHidden(trackListEl, true);
-      setHidden(emptyStateEl, true);
       setHidden(dashboardPageEl, false);
       renderDashboard();
       return;
     }
+    if (state.view.type === "nowplaying") {
+      hideAllPages();
+      viewTitle.textContent = "Now Playing";
+      setHidden(nowplayingPageEl, false);
+      clearIdleHint();
+      return;
+    }
+    hideAllPages();
     setHidden(searchBox, false);
-    setHidden(addPageEl, true);
-    setHidden(dashboardPageEl, true);
     setHidden(trackListEl, false);
 
     viewTitle.textContent = state.view.type === "playlist"
@@ -544,9 +574,17 @@
     renderView();
   }
 
+  function openNowPlaying() {
+    state.view = { type: "nowplaying" };
+    resetSearch();
+    renderSidebar();
+    renderView();
+  }
+
   navDashboard.addEventListener("click", openDashboard);
   navLibrary.addEventListener("click", openLibrary);
   navAdd.addEventListener("click", openAdd);
+  navNowPlaying.addEventListener("click", openNowPlaying);
 
   searchInput.addEventListener("input", () => {
     state.searchQuery = searchInput.value;
@@ -697,6 +735,22 @@
     }
     npTitle.textContent = track ? track.title : "No track loaded";
     npArtist.textContent = track ? (track.artist || "Unknown artist") : "";
+
+    // The dedicated Now Playing page mirrors the same track.
+    setHidden(nowplayingEmptyEl, !!track);
+    setHidden(nowplayingContentEl, !track);
+    if (track) {
+      if (track.cover) {
+        nowplayingCover.src = track.cover;
+        setHidden(nowplayingCover, false);
+        setHidden(nowplayingCoverFallback, true);
+      } else {
+        setHidden(nowplayingCover, true);
+        setHidden(nowplayingCoverFallback, false);
+      }
+      nowplayingTitle.textContent = track.title;
+      nowplayingArtist.textContent = track.artist || "Unknown artist";
+    }
   }
 
   function playPause() {
@@ -1028,6 +1082,130 @@
     if (e.key === "Escape") { e.preventDefault(); closeModal(); }
   });
 
+  // ---------------- settings ----------------
+
+  function hexToRgbArr(hex) {
+    const m = hex.replace("#", "");
+    return [0, 2, 4].map((i) => parseInt(m.substr(i, 2), 16));
+  }
+
+  function rgbToHex([r, g, b]) {
+    return "#" + [r, g, b].map((c) => Math.max(0, Math.min(255, Math.round(c))).toString(16).padStart(2, "0")).join("");
+  }
+
+  function relativeLuminance([r, g, b]) {
+    const [R, G, B] = [r, g, b].map((c) => {
+      c /= 255;
+      return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * R + 0.7152 * G + 0.0722 * B;
+  }
+
+  function lighten(hex, amount) {
+    const rgb = hexToRgbArr(hex).map((c) => c + (255 - c) * amount);
+    return rgbToHex(rgb);
+  }
+
+  function applyAccentColor(hex) {
+    const rgb = hexToRgbArr(hex);
+    const root = document.documentElement.style;
+    root.setProperty("--accent", hex);
+    root.setProperty("--accent-hover", lighten(hex, 0.18));
+    root.setProperty("--accent-rgb", rgb.join(", "));
+    root.setProperty("--accent-text", relativeLuminance(rgb) > 0.5 ? "#1a0f05" : "#ffffff");
+
+    let matched = false;
+    colorSwatches.querySelectorAll(".color-swatch[data-color]").forEach((btn) => {
+      const isMatch = btn.dataset.color.toLowerCase() === hex.toLowerCase();
+      btn.classList.toggle("active", isMatch);
+      if (isMatch) matched = true;
+    });
+    customColorInput.value = hex;
+    colorSwatches.querySelector(".color-swatch-custom").classList.toggle("active", !matched);
+  }
+
+  async function saveSettings(partial) {
+    Object.assign(state.settings, partial);
+    try {
+      state.settings = await api("POST", "/api/settings", partial);
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+  }
+
+  colorSwatches.querySelectorAll(".color-swatch[data-color]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      applyAccentColor(btn.dataset.color);
+      saveSettings({ accent_color: btn.dataset.color });
+    });
+  });
+
+  customColorInput.addEventListener("input", () => {
+    applyAccentColor(customColorInput.value);
+  });
+  customColorInput.addEventListener("change", () => {
+    saveSettings({ accent_color: customColorInput.value });
+  });
+
+  idleTimeoutInput.addEventListener("change", () => {
+    let minutes = parseFloat(idleTimeoutInput.value);
+    if (!isFinite(minutes) || minutes < 1) minutes = 1;
+    if (minutes > 180) minutes = 180;
+    idleTimeoutInput.value = minutes;
+    saveSettings({ idle_timeout_minutes: minutes });
+    resetIdleTimer();
+  });
+
+  function toggleSettingsDropdown() {
+    if (!settingsDropdown.hasAttribute("hidden")) {
+      setHidden(settingsDropdown, true);
+      return;
+    }
+    const rect = settingsBtn.getBoundingClientRect();
+    setHidden(settingsDropdown, false);
+    const popRect = settingsDropdown.getBoundingClientRect();
+    let top = rect.top - popRect.height - 8;
+    if (top < 8) top = rect.bottom + 8;
+    settingsDropdown.style.left = `${Math.max(8, rect.left)}px`;
+    settingsDropdown.style.top = `${Math.max(8, top)}px`;
+  }
+
+  settingsBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleSettingsDropdown();
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!settingsDropdown.hasAttribute("hidden") && !settingsDropdown.contains(e.target) && !settingsBtn.contains(e.target)) {
+      setHidden(settingsDropdown, true);
+    }
+  });
+
+  // ---------------- idle / inactivity tracking ----------------
+
+  function clearIdleHint() {
+    idleHintShown = false;
+    setHidden(nowPlayingHintDot, true);
+  }
+
+  function resetIdleTimer() {
+    clearIdleHint();
+    if (idleTimerId) clearTimeout(idleTimerId);
+    const ms = state.settings.idle_timeout_minutes * 60 * 1000;
+    idleTimerId = setTimeout(() => {
+      // Only worth inviting the user to Now Playing if something is
+      // actually loaded and they're not already looking at it.
+      if (state.queueIndex !== -1 && state.view.type !== "nowplaying") {
+        idleHintShown = true;
+        setHidden(nowPlayingHintDot, false);
+      }
+    }, ms);
+  }
+
+  ["mousemove", "mousedown", "keydown", "wheel", "touchstart"].forEach((evt) => {
+    document.addEventListener(evt, resetIdleTimer, { passive: true });
+  });
+
   // ---------------- keyboard shortcuts ----------------
 
   document.addEventListener("keydown", (e) => {
@@ -1045,6 +1223,14 @@
     } catch (err) {
       setStatus(err.message, true);
     }
+    try {
+      state.settings = await api("GET", "/api/settings");
+    } catch (err) {
+      // keep the built-in defaults already in state.settings
+    }
+    applyAccentColor(state.settings.accent_color);
+    idleTimeoutInput.value = state.settings.idle_timeout_minutes;
+    resetIdleTimer();
     renderSidebar();
     renderView();
   }

@@ -27,6 +27,11 @@
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 8v8M8 12h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         Add Music
       </button>
+      <button class="nav-item" data-view="nowplaying" id="nav-nowplaying">
+        <svg viewBox="0 0 24 24"><rect x="4" y="10" width="3" height="7" rx="1" fill="currentColor"/><rect x="10.5" y="5" width="3" height="12" rx="1" fill="currentColor"/><rect x="17" y="12" width="3" height="5" rx="1" fill="currentColor"/></svg>
+        Now Playing
+        <span id="nowplaying-hint-dot" class="nav-hint-dot" hidden></span>
+      </button>
     </nav>
 
     <div class="playlists-header">
@@ -36,6 +41,13 @@
       </button>
     </div>
     <ul id="playlist-list" class="playlist-list"></ul>
+
+    <div class="sidebar-footer">
+      <button id="settings-btn" class="nav-item" title="Settings">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.5-2-3.4-2.4 1a7.6 7.6 0 0 0-1.7-1L15 3h-6l-.3 2.6a7.6 7.6 0 0 0-1.7 1l-2.4-1-2 3.4L4.6 11a7.6 7.6 0 0 0 0 2l-2 1.5 2 3.4 2.4-1a7.6 7.6 0 0 0 1.7 1L9 21h6l.3-2.6a7.6 7.6 0 0 0 1.7-1l2.4 1 2-3.4-2-1.5Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        Settings
+      </button>
+    </div>
   </aside>
 
   <main class="main">
@@ -69,6 +81,20 @@
         <p id="most-played-empty" class="dash-empty-hint" hidden>Play some tracks and your most-played will show up here.</p>
         <div id="most-played-grid" class="tile-grid tile-grid-small"></div>
       </section>
+    </div>
+
+    <div id="nowplaying-page" class="nowplaying-page" hidden>
+      <p id="nowplaying-empty" class="dash-empty-hint">Nothing playing right now &mdash; pick a track from All Songs or a playlist.</p>
+      <div id="nowplaying-content" class="nowplaying-content" hidden>
+        <div class="nowplaying-art">
+          <img id="nowplaying-cover" alt="" hidden>
+          <div id="nowplaying-cover-fallback" class="nowplaying-cover-fallback">
+            <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6" cy="18" r="3" stroke="currentColor" stroke-width="1.4" fill="none"/><circle cx="18" cy="16" r="3" stroke="currentColor" stroke-width="1.4" fill="none"/></svg>
+          </div>
+        </div>
+        <div id="nowplaying-title" class="nowplaying-title">&nbsp;</div>
+        <div id="nowplaying-artist" class="nowplaying-artist">&nbsp;</div>
+      </div>
     </div>
 
     <div id="add-page" class="add-page" hidden>
@@ -162,6 +188,30 @@
 </div>
 
 <div id="add-popover" class="popover" hidden></div>
+
+<div id="settings-dropdown" class="popover settings-dropdown" hidden>
+  <div class="settings-row">
+    <label for="idle-timeout-input">Inactive timeout</label>
+    <div class="settings-inline">
+      <input id="idle-timeout-input" type="number" min="1" max="180" step="1">
+      <span class="settings-unit">min</span>
+    </div>
+  </div>
+  <div class="settings-row">
+    <label>Theme color</label>
+    <div class="color-swatches" id="color-swatches">
+      <button class="color-swatch" data-color="#ff8a3d" style="background:#ff8a3d" title="Orange"></button>
+      <button class="color-swatch" data-color="#4f9dff" style="background:#4f9dff" title="Blue"></button>
+      <button class="color-swatch" data-color="#4fd68c" style="background:#4fd68c" title="Green"></button>
+      <button class="color-swatch" data-color="#ff5c8a" style="background:#ff5c8a" title="Pink"></button>
+      <button class="color-swatch" data-color="#b06bff" style="background:#b06bff" title="Purple"></button>
+      <button class="color-swatch" data-color="#ffd54f" style="background:#ffd54f" title="Yellow"></button>
+      <label class="color-swatch color-swatch-custom" title="Custom color">
+        <input id="custom-color-input" type="color" value="#ff8a3d">
+      </label>
+    </div>
+  </div>
+</div>
 
 <script src="/js/app.js"></script>
 </body>
