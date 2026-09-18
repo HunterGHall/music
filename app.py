@@ -262,9 +262,13 @@ def _youtube_track_fields(info):
 def _rename_with_artist(path, title, artist):
     """Renames a downloaded file to the "Artist - Title" convention
     _track_fields() parses artist/title from, moving its cover art along
-    with it. No-ops (returns path/title unchanged) when no artist is known.
-    Returns (final_path, display_name)."""
-    if not artist:
+    with it. No-ops (returns path/title unchanged) when no artist is known,
+    the title already leads with it (e.g. a raw "Artist & Other - Song"
+    title, where prefixing again would just duplicate the name), or the
+    file is already gone (a stale duplicate postprocessor event for a track
+    some other call already renamed - yt-dlp's hooks can fire more than
+    once per entry). Returns (final_path, display_name)."""
+    if not artist or title.lower().startswith(artist.lower()) or not path.is_file():
         return path, title
     display_name = f"{artist} - {title}"
     final = path.with_name(_sanitize_filename(display_name) + path.suffix)
@@ -310,6 +314,8 @@ def _download_youtube_playlist(url, progress_hook, on_track):
         if d.get("status") == "finished" and d.get("postprocessor") == "MoveFiles":
             info = d["info_dict"]
             path = Path(info["filepath"])
+            if not path.is_file():
+                return  # a stale duplicate event for a track already handled below
             title, artist = _youtube_track_fields(info)
             final, display_name = _rename_with_artist(path, title or path.stem, artist)
             thumb = info.get("thumbnail")

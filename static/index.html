@@ -37,6 +37,13 @@
   <main class="main">
     <header class="topbar">
       <h1 id="view-title">Home</h1>
+      <div id="search-box" class="search-box">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.3-4.3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <input id="search-input" type="text" placeholder="Search this list&hellip;" autocomplete="off">
+        <button id="search-clear" class="icon-btn small" title="Clear search" hidden>
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
     </header>
 
     <div id="status-line" class="status-line" hidden></div>

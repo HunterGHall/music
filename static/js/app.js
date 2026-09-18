@@ -10,6 +10,7 @@
     queue: [],          // tracks currently shown / playable in order
     queueIndex: -1,
     repeat: "off",       // off | all | one
+    searchQuery: "",
   };
 
   const audio = new Audio();
@@ -26,6 +27,9 @@
   const emptyStateEl = document.getElementById("empty-state");
   const statusLine = document.getElementById("status-line");
   const addPageEl = document.getElementById("add-page");
+  const searchBox = document.getElementById("search-box");
+  const searchInput = document.getElementById("search-input");
+  const searchClearBtn = document.getElementById("search-clear");
 
   const trackForm = document.getElementById("track-form");
   const trackUrlInput = document.getElementById("track-url");
@@ -238,11 +242,13 @@
   function renderView() {
     if (state.view.type === "add") {
       viewTitle.textContent = "Add Music";
+      setHidden(searchBox, true);
       setHidden(addPageEl, false);
       setHidden(trackListEl, true);
       setHidden(emptyStateEl, true);
       return;
     }
+    setHidden(searchBox, false);
     setHidden(addPageEl, true);
     setHidden(trackListEl, false);
 
@@ -250,14 +256,23 @@
       ? (currentPlaylist() ? currentPlaylist().name : "Playlist")
       : "Home";
 
-    const tracks = tracksForView();
+    const allTracks = tracksForView();
+    const query = state.searchQuery.trim().toLowerCase();
+    const tracks = query
+      ? allTracks.filter((t) => t.title.toLowerCase().includes(query) || (t.artist || "").toLowerCase().includes(query))
+      : allTracks;
+
+    const playingId = state.queue[state.queueIndex] ? state.queue[state.queueIndex].id : null;
     state.queue = tracks;
+    state.queueIndex = playingId ? tracks.findIndex((t) => t.id === playingId) : -1;
 
     trackListEl.innerHTML = "";
     setHidden(emptyStateEl, tracks.length > 0);
-    emptyStateEl.querySelector("p").textContent = state.view.type === "playlist"
-      ? "This playlist is empty. Add tracks from Home."
-      : "Your library is empty — go to Add Music to download something.";
+    emptyStateEl.querySelector("p").textContent = query
+      ? `No matches for "${state.searchQuery.trim()}".`
+      : state.view.type === "playlist"
+        ? "This playlist is empty. Add tracks from Home."
+        : "Your library is empty — go to Add Music to download something.";
 
     tracks.forEach((track, index) => {
       trackListEl.appendChild(buildTrackRow(track, index));
@@ -365,26 +380,54 @@
 
   // ---------------- navigation ----------------
 
+  function resetSearch() {
+    state.searchQuery = "";
+    searchInput.value = "";
+    setHidden(searchClearBtn, true);
+  }
+
   function openHome() {
     state.view = { type: "home" };
+    resetSearch();
     renderSidebar();
     renderView();
   }
 
   function openPlaylist(id) {
     state.view = { type: "playlist", id };
+    resetSearch();
     renderSidebar();
     renderView();
   }
 
   function openAdd() {
     state.view = { type: "add" };
+    resetSearch();
     renderSidebar();
     renderView();
   }
 
   navHome.addEventListener("click", openHome);
   navAdd.addEventListener("click", openAdd);
+
+  searchInput.addEventListener("input", () => {
+    state.searchQuery = searchInput.value;
+    setHidden(searchClearBtn, !searchInput.value);
+    renderView();
+  });
+  searchClearBtn.addEventListener("click", () => {
+    resetSearch();
+    searchInput.focus();
+    renderView();
+  });
+  searchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      resetSearch();
+      renderView();
+      searchInput.blur();
+    }
+  });
 
   // ---------------- add-to-playlist popover ----------------
 

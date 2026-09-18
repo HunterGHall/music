@@ -230,6 +230,56 @@ input {
   font-weight: 700;
 }
 
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 8px 14px;
+  width: 240px;
+  max-width: 100%;
+  color: var(--text-faint);
+  transition: border-color 0.15s ease, width 0.15s ease;
+}
+
+.search-box:focus-within {
+  border-color: var(--accent);
+  width: 280px;
+}
+
+.search-box svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.search-box input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.search-box input::placeholder {
+  color: var(--text-faint);
+}
+
+.search-box .icon-btn.small {
+  width: 20px;
+  height: 20px;
+  color: var(--text-faint);
+}
+
+.search-box .icon-btn.small svg {
+  width: 12px;
+  height: 12px;
+}
+
 /* ---------------- add music page ---------------- */
 
 .add-page {
