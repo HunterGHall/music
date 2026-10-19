@@ -22,7 +22,8 @@ SETTINGS_FILE = DATA_DIR / "settings.json"
 DEFAULT_SETTINGS = {"accent_color": "#ff8a3d", "idle_timeout_minutes": 2}
 STATIC_DIR = BASE_DIR / "static"
 AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".flac", ".ogg", ".opus", ".aac")
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+APP_USER_MODEL_ID = "local.music.player"
+USER_AGENT ="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 app = Flask(__name__, static_folder=None)
 
@@ -696,6 +697,21 @@ def run_web(port=8734):
 
 def run_desktop():
     import webview
+    if sys.platform == "win32":
+        # Name the process for the Windows media overlay instead of "Unknown
+        # app": Windows looks the label up by AppUserModelID, so register a
+        # DisplayName for ours under HKCU (per-user, no admin needed).
+        try:
+            import ctypes
+            import winreg
+            with winreg.CreateKey(
+                winreg.HKEY_CURRENT_USER,
+                rf"Software\Classes\AppUserModelId\{APP_USER_MODEL_ID}",
+            ) as key:
+                winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "Music")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+        except Exception:
+            pass
     port = 8734
     threading.Thread(target=run_web, kwargs={"port": port}, daemon=True).start()
     time.sleep(0.6)
@@ -704,7 +720,9 @@ def run_desktop():
         width=1280, height=820, min_size=(960, 620),
         background_color="#0b0b0d",
     )
-    webview.start()
+    # pywebview defaults to a private (incognito) WebView2 session, which makes
+    # Windows hide track metadata in the media overlay.
+    webview.start(private_mode=False, storage_path=str(DATA_DIR / "webview"))
 
 
 if __name__ == "__main__":

@@ -724,7 +724,24 @@
     updatePlayingHighlight();
   }
 
+  function updateMediaSessionMetadata(track) {
+    if (!("mediaSession" in navigator) || typeof MediaMetadata === "undefined") return;
+    if (!track) {
+      navigator.mediaSession.metadata = null;
+      return;
+    }
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: track.title,
+      artist: track.artist || "Unknown artist",
+      album: "Music",
+      artwork: track.cover
+        ? [{ src: new URL(track.cover, location.href).href, sizes: "512x512", type: "image/jpeg" }]
+        : [],
+    });
+  }
+
   function updateNowPlayingUI(track) {
+    updateMediaSessionMetadata(track);
     if (track && track.cover) {
       npCover.src = track.cover;
       setHidden(npCover, false);
