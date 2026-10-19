@@ -7,8 +7,11 @@
     library: [],       // all tracks in the local library
     playlists: [],      // [{id, name, track_ids}]
     view: { type: "dashboard" },  // {type:"dashboard"} | {type:"library"} | {type:"playlist", id} | {type:"add"}
-    queue: [],          // tracks currently shown / playable in order
-    queueIndex: -1,
+    queue: [],          // tracks currently shown / playable in order (the "context")
+    queueIndex: -1,     // position of the last context track played within state.queue
+    upNext: [],         // [{qid, track}] user-queued tracks, played before the context continues
+    current: null,      // the track that is loaded/playing right now
+    fromUpNext: false,  // whether `current` came from upNext rather than the context
     repeat: "off",       // off | all | one
     searchQuery: "",
     sortKey: "default",  // default | title | artist | plays | duration | added
@@ -51,6 +54,15 @@
   const sortDirBtn = document.getElementById("sort-dir-btn");
   const artistSelect = document.getElementById("artist-select");
 
+  const navQueue = document.getElementById("nav-queue");
+  const queueCountEl = document.getElementById("queue-count");
+  const queuePageEl = document.getElementById("queue-page");
+  const queueNowEl = document.getElementById("queue-now");
+  const queueNextEl = document.getElementById("queue-next");
+  const queueNextEmptyEl = document.getElementById("queue-next-empty");
+  const queueClearBtn = document.getElementById("queue-clear");
+  const queueContextSectionEl = document.getElementById("queue-context-section");
+  const queueContextEl = document.getElementById("queue-context");
   const navNowPlaying = document.getElementById("nav-nowplaying");
   const nowPlayingHintDot = document.getElementById("nowplaying-hint-dot");
   const nowplayingPageEl = document.getElementById("nowplaying-page");
@@ -184,6 +196,7 @@
     navLibrary.classList.toggle("active", state.view.type === "library");
     navAdd.classList.toggle("active", state.view.type === "add");
     navNowPlaying.classList.toggle("active", state.view.type === "nowplaying");
+    navQueue.classList.toggle("active", state.view.type === "queue");
 
     playlistListEl.innerHTML = "";
     for (const pl of state.playlists) {
@@ -375,6 +388,7 @@
     setHidden(dashboardPageEl, true);
     setHidden(addPageEl, true);
     setHidden(nowplayingPageEl, true);
+    setHidden(queuePageEl, true);
     setHidden(trackListEl, true);
     setHidden(emptyStateEl, true);
   }
@@ -391,6 +405,13 @@
       viewTitle.textContent = "Home";
       setHidden(dashboardPageEl, false);
       renderDashboard();
+      return;
+    }
+    if (state.view.type === "queue") {
+      hideAllPages();
+      viewTitle.textContent = "Queue";
+      setHidden(queuePageEl, false);
+      renderQueuePage();
       return;
     }
     if (state.view.type === "nowplaying") {
@@ -484,6 +505,18 @@
       e.stopPropagation();
       openAddPopover(track, addBtn);
     });
+    const playNextBtn = document.createElement("button");
+    playNextBtn.className = "icon-btn";
+    playNextBtn.title = "Play next";
+    playNextBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M19 5h-2v14h2zM5 5l10 7-10 7z" fill="currentColor"/></svg>';
+    playNextBtn.addEventListener("click", (e) => { e.stopPropagation(); enqueue(track, true); });
+    const queueBtn = document.createElement("button");
+    queueBtn.className = "icon-btn";
+    queueBtn.title = "Add to queue";
+    queueBtn.innerHTML = QUEUE_ADD_ICON;
+    queueBtn.addEventListener("click", (e) => { e.stopPropagation(); enqueue(track, false); });
+    actions.appendChild(playNextBtn);
+    actions.appendChild(queueBtn);
     actions.appendChild(addBtn);
 
     if (state.view.type === "playlist") {
@@ -601,7 +634,7 @@
   }
 
   function updatePlayingHighlight() {
-    const current = state.queue[state.queueIndex];
+    const current = state.current;
     trackListEl.querySelectorAll(".track-row").forEach((row) => {
       row.classList.toggle("playing", !!current && row.dataset.id === current.id);
     });
@@ -749,6 +782,13 @@
     renderView();
   }
 
+  function openQueue() {
+    state.view = { type: "queue" };
+    resetSearch();
+    renderSidebar();
+    renderView();
+  }
+
   function openNowPlaying() {
     state.view = { type: "nowplaying" };
     resetSearch();
@@ -760,6 +800,7 @@
   navLibrary.addEventListener("click", openLibrary);
   navAdd.addEventListener("click", openAdd);
   navNowPlaying.addEventListener("click", openNowPlaying);
+  navQueue.addEventListener("click", openQueue);
 
   searchInput.addEventListener("input", () => {
     state.searchQuery = searchInput.value;
@@ -883,14 +924,11 @@
     api("POST", `/api/tracks/${encodeURIComponent(track.id)}/play`).catch(() => {});
   }
 
-  function playQueueAt(index) {
-    if (index < 0 || index >= state.queue.length) return;
-    state.queueIndex = index;
-    if (state.shuffle) {
-      const pos = state.shuffleOrder.indexOf(index);
-      state.shufflePos = pos !== -1 ? pos : 0;
-    }
-    const track = state.queue[index];
+  // Loads and plays a track. `fromUpNext` marks tracks pulled from the
+  // user's queue, which don't move the context position (queueIndex).
+  function startTrack(track, fromUpNext) {
+    state.current = track;
+    state.fromUpNext = !!fromUpNext;
     applyNormalization(track);
     audio.src = `/audio/${encodeURIComponent(track.id)}`;
     audio.currentTime = 0;
@@ -898,6 +936,17 @@
     recordPlay(track);
     updateNowPlayingUI(track);
     updatePlayingHighlight();
+    onQueueChanged();
+  }
+
+  function playQueueAt(index) {
+    if (index < 0 || index >= state.queue.length) return;
+    state.queueIndex = index;
+    if (state.shuffle) {
+      const pos = state.shuffleOrder.indexOf(index);
+      state.shufflePos = pos !== -1 ? pos : 0;
+    }
+    startTrack(state.queue[index], false);
   }
 
   function updateMediaSessionMetadata(track) {
@@ -947,8 +996,9 @@
   }
 
   function playPause() {
-    if (state.queueIndex === -1) {
-      if (state.queue.length > 0) playQueueAt(0);
+    if (!state.current) {
+      if (state.upNext.length > 0) startTrack(state.upNext.shift().track, true);
+      else if (state.queue.length > 0) playQueueAt(0);
       return;
     }
     if (audio.paused) {
@@ -959,11 +1009,16 @@
   }
 
   function goNext(fromEnded) {
-    if (state.queue.length === 0) return;
-    if (fromEnded && state.repeat === "one") {
-      playQueueAt(state.queueIndex);
+    if (fromEnded && state.repeat === "one" && state.current) {
+      startTrack(state.current, state.fromUpNext);
       return;
     }
+    // Queued tracks play first; the context then carries on where it left off.
+    if (state.upNext.length > 0) {
+      startTrack(state.upNext.shift().track, true);
+      return;
+    }
+    if (state.queue.length === 0) return;
     if (state.shuffle) {
       let pos = state.shufflePos + 1;
       if (pos >= state.shuffleOrder.length) {
@@ -989,11 +1044,17 @@
   }
 
   function goPrev() {
-    if (state.queue.length === 0) return;
     if (audio.currentTime > 5) {
       audio.currentTime = 0;
       return;
     }
+    if (state.fromUpNext) {
+      // Back from a queued track = return to the context track it interrupted.
+      if (state.queue[state.queueIndex]) playQueueAt(state.queueIndex);
+      else audio.currentTime = 0;
+      return;
+    }
+    if (state.queue.length === 0) return;
     if (state.shuffle) {
       let pos = state.shufflePos - 1;
       if (pos < 0) pos = state.repeat === "all" ? state.shuffleOrder.length - 1 : 0;
@@ -1018,6 +1079,186 @@
   nextBtn.addEventListener("click", () => goNext(false));
   playBtn.addEventListener("click", playPause);
   repeatBtn.addEventListener("click", cycleRepeat);
+
+  // ---------------- queue ----------------
+  // "Up next" is the user's own queue: it plays before the current list
+  // (the context) carries on, like Spotify's queue.
+
+  const QUEUE_ADD_ICON = '<svg viewBox="0 0 24 24"><path d="M3 6h12M3 12h12M3 18h8M18 14v6M15 17h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+  const REMOVE_ICON = '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+  const CONTEXT_PREVIEW_LIMIT = 30;
+  let qidCounter = 0;
+  let dragQid = null;
+
+  function flash(message) {
+    setStatus(message, false);
+    setTimeout(() => { if (statusLine.textContent === message) setStatus(""); }, 2200);
+  }
+
+  function onQueueChanged() {
+    const n = state.upNext.length;
+    queueCountEl.textContent = n;
+    setHidden(queueCountEl, n === 0);
+    if (state.view.type === "queue") renderQueuePage();
+  }
+
+  function enqueue(track, atFront) {
+    const entry = { qid: ++qidCounter, track };
+    if (atFront) state.upNext.unshift(entry);
+    else state.upNext.push(entry);
+    flash(`${atFront ? "Playing next" : "Added to queue"}: ${track.title}`);
+    onQueueChanged();
+  }
+
+  // Tracks the context will play after the current one, in play order.
+  function upcomingContext() {
+    if (state.queueIndex === -1 || state.queue.length === 0) return [];
+    const out = [];
+    if (state.shuffle) {
+      for (let pos = state.shufflePos + 1; pos < state.shuffleOrder.length && out.length < CONTEXT_PREVIEW_LIMIT; pos++) {
+        const index = state.shuffleOrder[pos];
+        out.push({ track: state.queue[index], index });
+      }
+    } else {
+      for (let index = state.queueIndex + 1; index < state.queue.length && out.length < CONTEXT_PREVIEW_LIMIT; index++) {
+        out.push({ track: state.queue[index], index });
+      }
+    }
+    return out;
+  }
+
+  function buildQueueRow(track, { playing = false, onClick = null, actions = [] } = {}) {
+    const row = document.createElement("div");
+    row.className = "track-row" + (playing ? " playing" : "");
+
+    let cover;
+    if (track.cover) {
+      cover = document.createElement("img");
+      cover.className = "track-cover";
+      cover.src = track.cover;
+      cover.alt = "";
+    } else {
+      cover = document.createElement("div");
+      cover.className = "track-cover-fallback";
+      cover.innerHTML = TILE_FALLBACK_ICON;
+    }
+
+    const info = document.createElement("div");
+    info.className = "track-info";
+    const titleEl = document.createElement("div");
+    titleEl.className = "track-title";
+    titleEl.textContent = track.title;
+    const artistEl = document.createElement("div");
+    artistEl.className = "track-artist";
+    artistEl.textContent = track.artist || "Unknown artist";
+    info.appendChild(titleEl);
+    info.appendChild(artistEl);
+
+    const duration = document.createElement("div");
+    duration.className = "track-duration";
+    duration.textContent = formatTime(track.duration);
+
+    const actionsEl = document.createElement("div");
+    actionsEl.className = "track-actions";
+    for (const a of actions) {
+      const btn = document.createElement("button");
+      btn.className = "icon-btn";
+      btn.title = a.title;
+      btn.innerHTML = a.icon;
+      btn.addEventListener("click", (e) => { e.stopPropagation(); a.onClick(); });
+      actionsEl.appendChild(btn);
+    }
+
+    row.append(cover, info, duration, actionsEl);
+    if (onClick) row.addEventListener("click", onClick);
+    return row;
+  }
+
+  function clearQueueDropIndicators() {
+    queueNextEl.querySelectorAll(".drop-before, .drop-after").forEach((el) => el.classList.remove("drop-before", "drop-after"));
+  }
+
+  function attachQueueDrag(row, entry) {
+    row.draggable = true;
+    row.addEventListener("dragstart", (e) => {
+      dragQid = entry.qid;
+      row.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", String(entry.qid));
+    });
+    row.addEventListener("dragend", () => {
+      dragQid = null;
+      row.classList.remove("dragging");
+      clearQueueDropIndicators();
+    });
+    row.addEventListener("dragover", (e) => {
+      if (dragQid === null || dragQid === entry.qid) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      clearQueueDropIndicators();
+      row.classList.add(dropIsAfter(row, e) ? "drop-after" : "drop-before");
+    });
+    row.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const after = dropIsAfter(row, e);
+      const moved = state.upNext.find((x) => x.qid === dragQid);
+      dragQid = null;
+      if (!moved || moved === entry) return;
+      state.upNext = state.upNext.filter((x) => x !== moved);
+      const pos = state.upNext.indexOf(entry);
+      state.upNext.splice(after ? pos + 1 : pos, 0, moved);
+      onQueueChanged();
+    });
+  }
+
+  function renderQueuePage() {
+    // Now playing
+    queueNowEl.innerHTML = "";
+    if (state.current) {
+      queueNowEl.appendChild(buildQueueRow(state.current, { playing: true }));
+    } else {
+      const hint = document.createElement("p");
+      hint.className = "dash-empty-hint";
+      hint.textContent = "Nothing playing right now.";
+      queueNowEl.appendChild(hint);
+    }
+
+    // The user's queue
+    queueNextEl.innerHTML = "";
+    setHidden(queueNextEmptyEl, state.upNext.length > 0);
+    setHidden(queueClearBtn, state.upNext.length === 0);
+    for (const entry of state.upNext) {
+      const row = buildQueueRow(entry.track, {
+        onClick: () => {
+          state.upNext = state.upNext.filter((x) => x !== entry);
+          startTrack(entry.track, true);
+        },
+        actions: [{
+          title: "Remove from queue",
+          icon: REMOVE_ICON,
+          onClick: () => { state.upNext = state.upNext.filter((x) => x !== entry); onQueueChanged(); },
+        }],
+      });
+      attachQueueDrag(row, entry);
+      queueNextEl.appendChild(row);
+    }
+
+    // What the list carries on with after the queue
+    queueContextEl.innerHTML = "";
+    const upcoming = upcomingContext();
+    setHidden(queueContextSectionEl, upcoming.length === 0);
+    for (const { track, index } of upcoming) {
+      queueContextEl.appendChild(buildQueueRow(track, {
+        onClick: () => playQueueAt(index),
+        actions: [{ title: "Add to queue", icon: QUEUE_ADD_ICON, onClick: () => enqueue(track, false) }],
+      }));
+    }
+  }
+
+  queueClearBtn.addEventListener("click", () => {
+    state.upNext = [];
+    onQueueChanged();
+  });
 
   // ---------------- now playing visualizer ----------------
   // Frequency bars from a Web Audio AnalyserNode. The audio is served from the
@@ -1080,7 +1321,7 @@
     } catch (_) {
       return;
     }
-    const current = state.queue[state.queueIndex];
+    const current = state.current;
     if (current && current.id === track.id && state.settings.normalize_volume !== false) {
       setGainDb(track.gain_db);
     }
@@ -1183,14 +1424,17 @@
   // ---------------- deleting tracks ----------------
 
   async function deleteTrack(trackId) {
-    const wasPlaying = state.queue[state.queueIndex] && state.queue[state.queueIndex].id === trackId;
+    const wasPlaying = !!state.current && state.current.id === trackId;
     await api("DELETE", `/api/tracks/${encodeURIComponent(trackId)}`);
+    state.upNext = state.upNext.filter((e) => e.track.id !== trackId);
     if (wasPlaying) {
       audio.pause();
       audio.removeAttribute("src");
-      state.queueIndex = -1;
+      if (!state.fromUpNext) state.queueIndex = -1;
+      state.current = null;
       updateNowPlayingUI(null);
     }
+    onQueueChanged();
     await Promise.all([loadLibrary(), loadPlaylists()]);
     renderSidebar();
     renderView();
@@ -1538,7 +1782,11 @@
       audio.load();
       state.queue = [];
       state.queueIndex = -1;
+      state.upNext = [];
+      state.current = null;
+      state.fromUpNext = false;
       updateNowPlayingUI(null);
+      onQueueChanged();
       await Promise.all([loadLibrary(), loadPlaylists()]);
       setHidden(settingsDropdown, true);
       renderSidebar();
@@ -1550,8 +1798,7 @@
 
   normalizeToggle.addEventListener("change", () => {
     saveSettings({ normalize_volume: normalizeToggle.checked });
-    const current = state.queue[state.queueIndex];
-    if (current) applyNormalization(current);
+    if (state.current) applyNormalization(state.current);
   });
 
   function toggleSettingsDropdown() {
@@ -1593,7 +1840,7 @@
     idleTimerId = setTimeout(() => {
       // Only worth inviting the user to Now Playing if something is
       // actually loaded and they're not already looking at it.
-      if (state.queueIndex !== -1 && state.view.type !== "nowplaying") {
+      if (state.current && state.view.type !== "nowplaying") {
         idleHintShown = true;
         setHidden(nowPlayingHintDot, false);
       }

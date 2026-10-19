@@ -32,6 +32,11 @@
         Now Playing
         <span id="nowplaying-hint-dot" class="nav-hint-dot" hidden></span>
       </button>
+      <button class="nav-item" data-view="queue" id="nav-queue">
+        <svg viewBox="0 0 24 24"><path d="M4 6h12M4 12h12M4 18h7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M17 14v6l5-3z" fill="currentColor"/></svg>
+        Queue
+        <span id="queue-count" class="nav-count" hidden></span>
+      </button>
     </nav>
 
     <div class="playlists-header">
@@ -115,6 +120,25 @@
         <div id="nowplaying-artist" class="nowplaying-artist">&nbsp;</div>
         <canvas id="nowplaying-visualizer" class="nowplaying-visualizer" width="720" height="160"></canvas>
       </div>
+    </div>
+
+    <div id="queue-page" class="queue-page" hidden>
+      <section class="queue-section">
+        <h2>Now playing</h2>
+        <div id="queue-now"></div>
+      </section>
+      <section class="queue-section">
+        <div class="queue-section-head">
+          <h2>Next in queue</h2>
+          <button id="queue-clear" class="queue-clear" type="button" hidden>Clear queue</button>
+        </div>
+        <p id="queue-next-empty" class="dash-empty-hint" hidden>Nothing queued &mdash; use <em>Play next</em> or <em>Add to queue</em> on any song.</p>
+        <div id="queue-next"></div>
+      </section>
+      <section id="queue-context-section" class="queue-section">
+        <h2>Next up</h2>
+        <div id="queue-context"></div>
+      </section>
     </div>
 
     <div id="add-page" class="add-page" hidden>

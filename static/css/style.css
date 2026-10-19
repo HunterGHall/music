@@ -590,6 +590,49 @@ input {
   margin-top: 6px;
 }
 
+/* ---------------- queue page ---------------- */
+
+.queue-page {
+  flex: 1;
+  overflow-y: auto;
+  max-width: 720px;
+  padding-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.queue-section h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.queue-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.queue-clear {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+.queue-clear:hover { color: var(--danger); }
+
+.nav-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
 /* ---------------- add music page ---------------- */
 
 .add-page {
