@@ -961,7 +961,9 @@
           setAddStatus(escapeHtml(label));
           setTimeout(tick, 500);
         } else if (job.status === "done") {
-          setAddStatus(`<span class="progress-done">Downloaded: ${escapeHtml(job.title)}</span>`);
+          setAddStatus(job.duplicate
+            ? `<span class="progress-done">Already in your library: ${escapeHtml(job.title)}</span>`
+            : `<span class="progress-done">Downloaded: ${escapeHtml(job.title)}</span>`);
           trackUrlInput.value = "";
           trackAddBtn.disabled = false;
           await loadLibrary();
@@ -995,24 +997,29 @@
   });
 
   function renderPlaylistProgress(job) {
-    const done = job.added.length + job.failed.length;
+    const skipped = job.skipped || [];
+    const done = job.added.length + skipped.length + job.failed.length;
     const total = job.total || done;
     const parts = [];
     let line = `Importing "${escapeHtml(job.playlist_name || "playlist")}"`;
-    if (total) line += ` &mdash; ${job.added.length}/${total}`;
+    if (total) line += ` &mdash; ${job.added.length + skipped.length}/${total}`;
     if (job.status === "downloading" && job.current_title) line += ` &mdash; now: ${escapeHtml(job.current_title)}`;
     parts.push(`<div class="progress-line">${line}</div>`);
     if (job.added.length) {
       parts.push(`<div class="progress-added">Added: ${job.added.map((t) => escapeHtml(t.title)).join(", ")}</div>`);
     }
+    if (skipped.length) {
+      parts.push(`<div class="progress-added">Already in library: ${skipped.map((t) => escapeHtml(t.title)).join(", ")}</div>`);
+    }
     if (job.failed.length) {
       parts.push(`<div class="progress-failed">Failed: ${job.failed.map((t) => escapeHtml(t.title)).join(", ")}</div>`);
     }
     if (job.status === "done") {
-      const summary = job.failed.length
-        ? `Done &mdash; added ${job.added.length} track${job.added.length === 1 ? "" : "s"}, ${job.failed.length} failed.`
-        : `Done &mdash; added ${job.added.length} track${job.added.length === 1 ? "" : "s"}.`;
-      parts.push(`<div class="progress-done">${summary}</div>`);
+      const plural = (n) => `${n} track${n === 1 ? "" : "s"}`;
+      let summary = `Done &mdash; added ${plural(job.added.length)}`;
+      if (skipped.length) summary += `, ${skipped.length} already in library`;
+      if (job.failed.length) summary += `, ${job.failed.length} failed`;
+      parts.push(`<div class="progress-done">${summary}.</div>`);
     }
     setAddStatus(parts.join(""));
   }

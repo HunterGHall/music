@@ -19,7 +19,8 @@ DATA_DIR = BASE_DIR / "data"
 PLAYLISTS_FILE = DATA_DIR / "playlists.json"
 STATS_FILE = DATA_DIR / "stats.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
-DEFAULT_SETTINGS = {"accent_color": "#ff8a3d", "idle_timeout_minutes": 2}
+SOURCES_FILE = DATA_DIR / "sources.json"
+DEFAULT_SETTINGS ={"accent_color": "#ff8a3d", "idle_timeout_minutes": 2}
 STATIC_DIR = BASE_DIR / "static"
 AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".flac", ".ogg", ".opus", ".aac")
 APP_USER_MODEL_ID = "local.music.player"
@@ -130,6 +131,53 @@ def _record_play(track_id):
         stats[track_id] = stats.get(track_id, 0) + 1
         _save_stats(stats)
         return stats[track_id]
+
+
+# ---------------- download sources (duplicate detection) ----------------
+# Maps a stable source key ("yt:<video id>" / "spotify:<track id>") to the
+# library filename it was downloaded as, so re-adding the same link is a no-op.
+
+def _load_sources():
+    if not SOURCES_FILE.is_file():
+        return {}
+    try:
+        return json.loads(SOURCES_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _source_key(url):
+    m = re.search(r"open\.spotify\.com/(?:intl-[a-z]+/)?track/([A-Za-z0-9]+)|spotify:track:([A-Za-z0-9]+)", url)
+    if m:
+        return "spotify:" + (m.group(1) or m.group(2))
+    if "youtube.com" in url or "youtu.be" in url:
+        m = re.search(r"(?:[?&]v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})", url)
+        if m:
+            return "yt:" + m.group(1)
+    return None
+
+
+def _existing_for_source(key):
+    """Path of the library file already downloaded from this source, if it
+    still exists (a deleted track is no longer a duplicate)."""
+    if not key:
+        return None
+    with _lock:
+        name = _load_sources().get(key)
+    if not name:
+        return None
+    path = LIBRARY_DIR / name
+    return path if path.is_file() else None
+
+
+def _record_source(key, filename):
+    if not key:
+        return
+    with _lock:
+        sources = _load_sources()
+        sources[key] = filename
+        DATA_DIR.mkdir(exist_ok=True)
+        SOURCES_FILE.write_text(json.dumps(sources, indent=2), encoding="utf-8")
 
 
 # ---------------- settings ----------------
@@ -355,10 +403,12 @@ def _download_youtube(url, hook):
     thumb = info.get("thumbnail")
     if thumb:
         _download_image(thumb, _cover_path_for(final))
+    if info.get("id"):
+        _record_source("yt:" + info["id"], final.name)
     return final, display_name
 
 
-def _download_youtube_playlist(url, progress_hook, on_track):
+def _download_youtube_playlist(url, progress_hook, on_track, on_existing):
     """Downloads every video in a YouTube playlist URL. `on_track(path,
     title)` fires once per track as soon as it finishes converting, so the
     caller can add it to a local playlist while the rest keep downloading.
@@ -378,9 +428,21 @@ def _download_youtube_playlist(url, progress_hook, on_track):
             thumb = info.get("thumbnail")
             if thumb:
                 _download_image(thumb, _cover_path_for(final))
+            if info.get("id"):
+                _record_source("yt:" + info["id"], final.name)
             on_track(final, display_name)
 
-    opts, yt_dlp = _ydl_opts(progress_hook, noplaylist=False, ignoreerrors=True)
+    def skip_existing(info, *, incomplete=False):
+        # yt-dlp match_filter: a non-None return skips the video. May be
+        # called more than once per entry, so on_existing must be idempotent.
+        existing = _existing_for_source("yt:" + info["id"]) if info.get("id") else None
+        if existing:
+            on_existing(existing)
+            return "already in library"
+        return None
+
+    opts, yt_dlp = _ydl_opts(progress_hook, noplaylist=False, ignoreerrors=True,
+                             match_filter=skip_existing)
     opts["postprocessor_hooks"] = [pp_hook]
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -389,10 +451,21 @@ def _download_youtube_playlist(url, progress_hook, on_track):
 
 def _download_spotify(url, hook):
     """Downloads a single Spotify track link by finding its best match on
-    YouTube. Returns (path, display_name)."""
+    YouTube. Returns (path, display_name, duplicate) - duplicate is True when
+    the track was already in the library and nothing was downloaded."""
+    key = _source_key(url)
+    existing = _existing_for_source(key)
+    if existing:
+        return existing, existing.stem, True
+
     title, artist, cover_url = _fetch_spotify_metadata(url)
     if not title:
         raise RuntimeError("Could not read that Spotify link - check it's a track URL.")
+
+    expected = LIBRARY_DIR / (_sanitize_filename(f"{artist} - {title}" if artist else title) + ".mp3")
+    if expected.is_file():
+        _record_source(key, expected.name)
+        return expected, expected.stem, True
 
     query = f"{artist} {title} audio".strip() if artist else f"{title} audio"
     opts, yt_dlp = _ydl_opts(hook, noplaylist=True)
@@ -416,7 +489,8 @@ def _download_spotify(url, hook):
 
     if cover_url:
         _download_image(cover_url, _cover_path_for(final))
-    return final, display_name
+    _record_source(key, final.name)
+    return final, display_name, False
 
 
 # ---------------- routes: static ----------------
@@ -594,6 +668,8 @@ def _new_job(kind):
         "playlist_id": None,         # for a "playlist" job
         "playlist_name": None,
         "total": 0,
+        "duplicate": False,          # a "track" job whose track was already in the library
+        "skipped": [],               # [{id, title}, ...] already in library (playlist job)
         "added": [],                 # [{id, title}, ...]
         "failed": [],                # [{title, error}, ...]
         "error": None,
@@ -612,13 +688,13 @@ def _run_playlist_import(url, job, progress_hook):
         for track_url in track_urls:
             job["current_title"] = None
             try:
-                path, track_title = _download_spotify(track_url, progress_hook)
+                path, track_title, duplicate = _download_spotify(track_url, progress_hook)
                 job["current_title"] = track_title
             except Exception as e:
                 job["failed"].append({"title": track_url, "error": str(e)})
                 continue
             _add_track_to_playlist_record(playlist["id"], path.name)
-            job["added"].append({"id": path.name, "title": track_title})
+            (job["skipped"] if duplicate else job["added"]).append({"id": path.name, "title": track_title})
     else:
         playlist = _create_playlist_record("Importing playlist...")
         job["playlist_id"] = playlist["id"]
@@ -628,11 +704,17 @@ def _run_playlist_import(url, job, progress_hook):
             _add_track_to_playlist_record(playlist["id"], path.name)
             job["added"].append({"id": path.name, "title": title})
 
-        playlist_title = _download_youtube_playlist(url, progress_hook, on_track)
+        def on_existing(path):
+            # Already downloaded: still belongs in this playlist, just don't re-fetch it.
+            _add_track_to_playlist_record(playlist["id"], path.name)
+            if not any(s["id"] == path.name for s in job["skipped"]):
+                job["skipped"].append({"id": path.name, "title": path.stem})
+
+        playlist_title = _download_youtube_playlist(url, progress_hook, on_track, on_existing)
         final_name = playlist_title or "Imported Playlist"
         _rename_playlist_record(playlist["id"], final_name)
         job["playlist_name"] = final_name
-        if not job["added"]:
+        if not job["added"] and not job["skipped"]:
             raise RuntimeError("Could not read any tracks from that YouTube playlist link.")
 
 
@@ -669,9 +751,13 @@ def api_download():
                 _run_playlist_import(url, job, progress_hook)
             else:
                 if _is_spotify_url(url):
-                    path, title = _download_spotify(url, progress_hook)
+                    path, title, job["duplicate"] = _download_spotify(url, progress_hook)
                 else:
-                    path, title = _download_youtube(url, progress_hook)
+                    existing = _existing_for_source(_source_key(url))
+                    if existing:
+                        path, title, job["duplicate"] = existing, existing.stem, True
+                    else:
+                        path, title = _download_youtube(url, progress_hook)
                 job["title"] = title
             job["status"] = "done"
         except Exception as e:
