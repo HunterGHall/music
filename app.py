@@ -20,7 +20,9 @@ PLAYLISTS_FILE = DATA_DIR / "playlists.json"
 STATS_FILE = DATA_DIR / "stats.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 SOURCES_FILE = DATA_DIR / "sources.json"
-DEFAULT_SETTINGS ={"accent_color": "#ff8a3d", "idle_timeout_minutes": 2}
+LOUDNESS_FILE = DATA_DIR / "loudness.json"
+DEFAULT_SETTINGS = {"accent_color": "#ff8a3d", "idle_timeout_minutes": 2, "normalize_volume": True}
+TARGET_LUFS = -14.0  # what every track is levelled to (streaming-service norm)
 STATIC_DIR = BASE_DIR / "static"
 AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".flac", ".ogg", ".opus", ".aac")
 APP_USER_MODEL_ID = "local.music.player"
@@ -92,16 +94,18 @@ def _cover_path_for(audio_path):
     return COVERS_DIR / (audio_path.stem + ".jpg")
 
 
-def _track_to_dict(path, stats=None):
+def _track_to_dict(path, stats=None, loudness=None):
     title, artist, duration = _track_fields(path)
     cover = _cover_path_for(path)
     return {
+        "gain_db": _cached_gain_db(path, loudness),
         "id": path.name,
         "title": title,
         "artist": artist,
         "duration": duration,
         "cover": f"/covers/{cover.name}" if cover.is_file() else None,
         "plays": (stats or {}).get(path.name, 0),
+        "added": path.stat().st_mtime,
     }
 
 
@@ -131,6 +135,97 @@ def _record_play(track_id):
         stats[track_id] = stats.get(track_id, 0) + 1
         _save_stats(stats)
         return stats[track_id]
+
+
+# ---------------- loudness normalization ----------------
+# Each track's integrated loudness (LUFS) and peak are measured once with
+# ffmpeg's ebur128 filter and cached; the player turns that into a per-track
+# gain so quiet and loud songs play at about the same volume.
+
+_loudness_lock = threading.Lock()  # one ffmpeg measurement at a time
+
+
+def _load_loudness():
+    if not LOUDNESS_FILE.is_file():
+        return {}
+    try:
+        return json.loads(LOUDNESS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _measure_loudness(path):
+    """(integrated LUFS, peak dBFS) or None if it can't be measured (ffmpeg
+    missing, unreadable file, or a silent track)."""
+    try:
+        out = subprocess.run(
+            ["ffmpeg", "-nostats", "-hide_banner", "-i", str(path),
+             "-af", "ebur128=peak=true:framelog=quiet", "-f", "null", "-"],
+            capture_output=True, text=True, errors="ignore",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        summary = out.stderr.split("Summary:")[-1]
+        lufs = re.findall(r"I:\s+(-?\d+(?:\.\d+)?)\s+LUFS", summary)
+        peak = re.findall(r"Peak:\s+(-?\d+(?:\.\d+)?)\s+dBFS", summary)
+        if not lufs or not peak:
+            return None
+        return float(lufs[-1]), float(peak[-1])
+    except Exception:
+        return None
+
+
+def _gain_db_from(entry):
+    """Gain to reach TARGET_LUFS, capped so boosting never pushes the peak
+    over full scale (no clipping) and so one odd file can't swing too far."""
+    gain = TARGET_LUFS - entry["lufs"]
+    gain = min(gain, -entry["peak"] - 1.0)  # keep 1 dB of headroom
+    return round(max(-15.0, gain), 2)
+
+
+def _cached_gain_db(path, loudness=None):
+    entry = (loudness if loudness is not None else _load_loudness()).get(path.name)
+    try:
+        if entry and entry["mtime"] == path.stat().st_mtime:
+            return _gain_db_from(entry)
+    except (OSError, KeyError):
+        pass
+    return None
+
+
+def _ensure_loudness(path):
+    """Measures (if not cached) and returns the gain in dB, or None."""
+    with _loudness_lock:
+        loudness = _load_loudness()
+        gain = _cached_gain_db(path, loudness)
+        if gain is not None:
+            return gain
+        measured = _measure_loudness(path)
+        if measured is None:
+            return None
+        loudness[path.name] = {"mtime": path.stat().st_mtime,
+                               "lufs": measured[0], "peak": measured[1]}
+        DATA_DIR.mkdir(exist_ok=True)
+        LOUDNESS_FILE.write_text(json.dumps(loudness, indent=2), encoding="utf-8")
+        return _gain_db_from(loudness[path.name])
+
+
+_scan_running = threading.Event()
+
+
+def _scan_loudness_async():
+    """Measures any tracks not yet cached, in the background."""
+    if _scan_running.is_set():
+        return
+    _scan_running.set()
+
+    def run():
+        try:
+            for path in find_track_paths():
+                _ensure_loudness(path)
+        finally:
+            _scan_running.clear()
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 # ---------------- download sources (duplicate detection) ----------------
@@ -526,12 +621,50 @@ def serve_audio(name):
 @app.get("/api/library")
 def api_library():
     stats = _load_stats()
-    return jsonify([_track_to_dict(p, stats) for p in find_track_paths()])
+    loudness = _load_loudness()
+    return jsonify([_track_to_dict(p, stats, loudness) for p in find_track_paths()])
+
+
+@app.get("/api/tracks/<path:track_id>/loudness")
+def api_track_loudness(track_id):
+    path = LIBRARY_DIR / track_id
+    if not path.is_file():
+        abort(404)
+    return jsonify({"gain_db": _ensure_loudness(path)})
 
 
 @app.post("/api/tracks/<path:track_id>/play")
 def api_record_play(track_id):
     return jsonify({"plays": _record_play(track_id)})
+
+
+@app.delete("/api/tracks")
+def api_delete_all_tracks():
+    """Deletes every song file (and its cover) from the library, and clears
+    everything that referred to them. Playlists themselves are kept, empty."""
+    deleted = 0
+    for path in find_track_paths():
+        try:
+            path.unlink()
+            deleted += 1
+        except OSError:
+            continue
+        cover = _cover_path_for(path)
+        if cover.is_file():
+            try:
+                cover.unlink()
+            except OSError:
+                pass
+    with _lock:
+        playlists = _load_playlists()
+        for pl in playlists:
+            pl["track_ids"] = []
+        _save_playlists(playlists)
+        _save_stats({})
+        DATA_DIR.mkdir(exist_ok=True)
+        SOURCES_FILE.write_text("{}", encoding="utf-8")
+        LOUDNESS_FILE.write_text("{}", encoding="utf-8")
+    return jsonify({"deleted": deleted})
 
 
 @app.delete("/api/tracks/<path:track_id>")
@@ -570,6 +703,8 @@ def api_update_settings():
         color = body.get("accent_color")
         if isinstance(color, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", color):
             settings["accent_color"] = color
+        if isinstance(body.get("normalize_volume"), bool):
+            settings["normalize_volume"] = body["normalize_volume"]
         if "idle_timeout_minutes" in body:
             try:
                 minutes = float(body["idle_timeout_minutes"])
@@ -617,6 +752,14 @@ def api_rename_playlist(pid):
         return jsonify(playlist)
 
 
+@app.delete("/api/playlists")
+def api_delete_all_playlists():
+    """Removes every playlist. Tracks stay in the library."""
+    with _lock:
+        _save_playlists([])
+    return "", 204
+
+
 @app.delete("/api/playlists/<pid>")
 def api_delete_playlist(pid):
     with _lock:
@@ -626,6 +769,24 @@ def api_delete_playlist(pid):
             return jsonify({"error": "Not found"}), 404
         _save_playlists(remaining)
     return "", 204
+
+
+@app.put("/api/playlists/<pid>/order")
+def api_reorder_tracks(pid):
+    track_ids = (request.get_json(silent=True) or {}).get("track_ids")
+    if not isinstance(track_ids, list):
+        return jsonify({"error": "track_ids required"}), 400
+    with _lock:
+        playlists = _load_playlists()
+        playlist = _find_playlist(playlists, pid)
+        if not playlist:
+            return jsonify({"error": "Not found"}), 404
+        # Must be a pure reordering - never add or drop tracks.
+        if sorted(track_ids) != sorted(playlist["track_ids"]):
+            return jsonify({"error": "track_ids must match the playlist's tracks"}), 400
+        playlist["track_ids"] = track_ids
+        _save_playlists(playlists)
+        return jsonify(playlist)
 
 
 @app.post("/api/playlists/<pid>/tracks")
@@ -665,7 +826,8 @@ def _new_job(kind):
         "percent": "",
         "current_title": None,
         "title": None,               # final title, for a "track" job
-        "playlist_id": None,         # for a "playlist" job
+        "as_playlist": True,         # False when a playlist link was imported as plain songs
+        "playlist_id": None,         # for a "playlist" job (None unless as_playlist)
         "playlist_name": None,
         "total": 0,
         "duplicate": False,          # a "track" job whose track was already in the library
@@ -676,14 +838,24 @@ def _new_job(kind):
     }
 
 
-def _run_playlist_import(url, job, progress_hook):
+def _run_playlist_import(url, job, progress_hook, as_playlist=True):
+    """Downloads every track of a playlist link. With as_playlist, the tracks
+    are also collected into a new local playlist; otherwise they're only added
+    to the library (All Songs)."""
+    job["as_playlist"] = as_playlist
+
+    def add_to_playlist(playlist, path):
+        if playlist:
+            _add_track_to_playlist_record(playlist["id"], path.name)
+
     if _is_spotify_playlist_url(url):
         title, track_urls = _fetch_spotify_playlist_tracks(url)
         if not track_urls:
             raise RuntimeError("Could not read tracks from that Spotify playlist link.")
-        playlist = _create_playlist_record(title or "Imported Playlist")
-        job["playlist_id"] = playlist["id"]
-        job["playlist_name"] = playlist["name"]
+        playlist = _create_playlist_record(title or "Imported Playlist") if as_playlist else None
+        if playlist:
+            job["playlist_id"] = playlist["id"]
+        job["playlist_name"] = playlist["name"] if playlist else (title or "Spotify playlist")
         job["total"] = len(track_urls)
         for track_url in track_urls:
             job["current_title"] = None
@@ -693,26 +865,28 @@ def _run_playlist_import(url, job, progress_hook):
             except Exception as e:
                 job["failed"].append({"title": track_url, "error": str(e)})
                 continue
-            _add_track_to_playlist_record(playlist["id"], path.name)
+            add_to_playlist(playlist, path)
             (job["skipped"] if duplicate else job["added"]).append({"id": path.name, "title": track_title})
     else:
-        playlist = _create_playlist_record("Importing playlist...")
-        job["playlist_id"] = playlist["id"]
-        job["playlist_name"] = playlist["name"]
+        playlist = _create_playlist_record("Importing playlist...") if as_playlist else None
+        if playlist:
+            job["playlist_id"] = playlist["id"]
+        job["playlist_name"] = playlist["name"] if playlist else "YouTube playlist"
 
         def on_track(path, title):
-            _add_track_to_playlist_record(playlist["id"], path.name)
+            add_to_playlist(playlist, path)
             job["added"].append({"id": path.name, "title": title})
 
         def on_existing(path):
-            # Already downloaded: still belongs in this playlist, just don't re-fetch it.
-            _add_track_to_playlist_record(playlist["id"], path.name)
+            # Already downloaded: still belongs in the playlist, just don't re-fetch it.
+            add_to_playlist(playlist, path)
             if not any(s["id"] == path.name for s in job["skipped"]):
                 job["skipped"].append({"id": path.name, "title": path.stem})
 
         playlist_title = _download_youtube_playlist(url, progress_hook, on_track, on_existing)
         final_name = playlist_title or "Imported Playlist"
-        _rename_playlist_record(playlist["id"], final_name)
+        if playlist:
+            _rename_playlist_record(playlist["id"], final_name)
         job["playlist_name"] = final_name
         if not job["added"] and not job["skipped"]:
             raise RuntimeError("Could not read any tracks from that YouTube playlist link.")
@@ -748,7 +922,7 @@ def api_download():
         COVERS_DIR.mkdir(exist_ok=True)
         try:
             if mode == "playlist":
-                _run_playlist_import(url, job, progress_hook)
+                _run_playlist_import(url, job, progress_hook, body.get("as_playlist", True) is not False)
             else:
                 if _is_spotify_url(url):
                     path, title, job["duplicate"] = _download_spotify(url, progress_hook)
@@ -762,6 +936,7 @@ def api_download():
             job["status"] = "done"
         except Exception as e:
             job.update(status="error", error=str(e))
+        _scan_loudness_async()  # measure whatever was just added
 
     threading.Thread(target=worker, daemon=True).start()
     return jsonify({"job_id": job_id}), 202
@@ -778,6 +953,7 @@ def api_download_status(job_id):
 # ---------------- entry points ----------------
 
 def run_web(port=8734):
+    _scan_loudness_async()
     app.run(host="127.0.0.1", port=port, debug=False, use_reloader=False)
 
 

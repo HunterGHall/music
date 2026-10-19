@@ -11,10 +11,13 @@
     queueIndex: -1,
     repeat: "off",       // off | all | one
     searchQuery: "",
+    sortKey: "default",  // default | title | artist | plays | duration | added
+    sortDir: "asc",
+    artistFilter: "",    // "" = all, UNKNOWN_ARTIST, or an artist name
     shuffle: false,
     shuffleOrder: [],    // permutation of indices into state.queue
     shufflePos: -1,      // current position within shuffleOrder
-    settings: { accent_color: "#ff8a3d", idle_timeout_minutes: 2 },
+    settings: { accent_color: "#ff8a3d", idle_timeout_minutes: 2, normalize_volume: true },
   };
 
   let idleHintShown = false;
@@ -43,6 +46,10 @@
   const searchBox = document.getElementById("search-box");
   const searchInput = document.getElementById("search-input");
   const searchClearBtn = document.getElementById("search-clear");
+  const listControlsEl = document.getElementById("list-controls");
+  const sortSelect = document.getElementById("sort-select");
+  const sortDirBtn = document.getElementById("sort-dir-btn");
+  const artistSelect = document.getElementById("artist-select");
 
   const navNowPlaying = document.getElementById("nav-nowplaying");
   const nowPlayingHintDot = document.getElementById("nowplaying-hint-dot");
@@ -58,6 +65,7 @@
   const settingsBtn = document.getElementById("settings-btn");
   const settingsDropdown = document.getElementById("settings-dropdown");
   const idleTimeoutInput = document.getElementById("idle-timeout-input");
+  const normalizeToggle = document.getElementById("normalize-toggle");
   const colorSwatches = document.getElementById("color-swatches");
   const customColorInput = document.getElementById("custom-color-input");
 
@@ -68,6 +76,12 @@
   const playlistUrlInput = document.getElementById("playlist-url");
   const playlistImportBtn = document.getElementById("playlist-import-btn");
   const addStatusEl = document.getElementById("add-status");
+  const playlistChoiceEl = document.getElementById("playlist-choice");
+  const choicePlaylistBtn = document.getElementById("choice-playlist");
+  const choiceSongsBtn = document.getElementById("choice-songs");
+  const choiceCancelBtn = document.getElementById("choice-cancel");
+  const deleteAllPlaylistsBtn = document.getElementById("delete-all-playlists-btn");
+  const deleteAllSongsBtn = document.getElementById("delete-all-songs-btn");
 
   const npCover = document.getElementById("np-cover");
   const npCoverFallback = document.getElementById("np-cover-fallback");
@@ -272,7 +286,91 @@
     return state.library;
   }
 
+  // ---------------- sorting / filtering ----------------
+
+  const UNKNOWN_ARTIST = "__unknown__";
+  const SORT_COMPARATORS = {
+    title: (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }),
+    artist: (a, b) => (a.artist || "").localeCompare(b.artist || "", undefined, { sensitivity: "base" })
+      || a.title.localeCompare(b.title, undefined, { sensitivity: "base" }),
+    plays: (a, b) => (a.plays || 0) - (b.plays || 0),
+    duration: (a, b) => (a.duration || 0) - (b.duration || 0),
+    added: (a, b) => (a.added || 0) - (b.added || 0),
+  };
+  const SORT_DESC_BY_DEFAULT = new Set(["plays", "added"]);
+
+  // "A, B & C" / "A feat. B" -> each credited artist, so a collab shows up
+  // under every one of its artists in the filter.
+  function artistParts(track) {
+    return (track.artist || "")
+      .split(/\s*(?:,|&|\bfeat\.?|\bft\.?)\s*/i)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  function buildArtistOptions(tracks) {
+    const names = new Set();
+    let hasUnknown = false;
+    for (const t of tracks) {
+      const parts = artistParts(t);
+      if (parts.length === 0) hasUnknown = true;
+      parts.forEach((p) => names.add(p));
+    }
+    const sorted = [...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    const options = [{ value: "", label: "All artists" }];
+    sorted.forEach((n) => options.push({ value: n, label: n }));
+    if (hasUnknown) options.push({ value: UNKNOWN_ARTIST, label: "Unknown artist" });
+    return options;
+  }
+
+  function matchesArtistFilter(track) {
+    if (!state.artistFilter) return true;
+    const parts = artistParts(track);
+    return state.artistFilter === UNKNOWN_ARTIST ? parts.length === 0 : parts.includes(state.artistFilter);
+  }
+
+  function sortTracks(tracks) {
+    const cmp = SORT_COMPARATORS[state.sortKey];
+    if (!cmp) return tracks; // "default": library order / the playlist's own order
+    const sign = state.sortDir === "desc" ? -1 : 1;
+    return [...tracks].sort((a, b) => sign * cmp(a, b));
+  }
+
+  // Syncs the controls with state and returns the artist-filter-valid tracks'
+  // source list so renderView can apply search/filter/sort to it.
+  function syncListControls(allTracks) {
+    const options = buildArtistOptions(allTracks);
+    if (!options.some((o) => o.value === state.artistFilter)) state.artistFilter = "";
+    artistSelect.innerHTML = "";
+    for (const o of options) {
+      const opt = document.createElement("option");
+      opt.value = o.value;
+      opt.textContent = o.label;
+      artistSelect.appendChild(opt);
+    }
+    artistSelect.value = state.artistFilter;
+    sortSelect.value = state.sortKey;
+    setHidden(sortDirBtn, state.sortKey === "default");
+    sortDirBtn.textContent = state.sortDir === "desc" ? "↓" : "↑";
+    sortDirBtn.title = state.sortDir === "desc" ? "Descending (click to reverse)" : "Ascending (click to reverse)";
+  }
+
+  sortSelect.addEventListener("change", () => {
+    state.sortKey = sortSelect.value;
+    state.sortDir = SORT_DESC_BY_DEFAULT.has(state.sortKey) ? "desc" : "asc";
+    renderView();
+  });
+  sortDirBtn.addEventListener("click", () => {
+    state.sortDir = state.sortDir === "desc" ? "asc" : "desc";
+    renderView();
+  });
+  artistSelect.addEventListener("change", () => {
+    state.artistFilter = artistSelect.value;
+    renderView();
+  });
+
   function hideAllPages() {
+    setHidden(listControlsEl, true);
     setHidden(searchBox, true);
     setHidden(dashboardPageEl, true);
     setHidden(addPageEl, true);
@@ -305,6 +403,7 @@
     }
     hideAllPages();
     setHidden(searchBox, false);
+    setHidden(listControlsEl, false);
     setHidden(trackListEl, false);
 
     viewTitle.textContent = state.view.type === "playlist"
@@ -312,10 +411,15 @@
       : "All Songs";
 
     const allTracks = tracksForView();
+    syncListControls(allTracks);
     const query = state.searchQuery.trim().toLowerCase();
-    const tracks = query
-      ? allTracks.filter((t) => t.title.toLowerCase().includes(query) || (t.artist || "").toLowerCase().includes(query))
-      : allTracks;
+    const filtered = allTracks.filter((t) =>
+      matchesArtistFilter(t)
+      && (!query || t.title.toLowerCase().includes(query) || (t.artist || "").toLowerCase().includes(query)));
+    const tracks = sortTracks(filtered);
+    // Dragging only makes sense when the list on screen IS the playlist's order.
+    reorderEnabled = state.view.type === "playlist" && state.sortKey === "default"
+      && !query && !state.artistFilter;
 
     const playingId = state.queue[state.queueIndex] ? state.queue[state.queueIndex].id : null;
     state.queue = tracks;
@@ -324,8 +428,8 @@
 
     trackListEl.innerHTML = "";
     setHidden(emptyStateEl, tracks.length > 0);
-    emptyStateEl.querySelector("p").textContent = query
-      ? `No matches for "${state.searchQuery.trim()}".`
+    emptyStateEl.querySelector("p").textContent = (query || state.artistFilter)
+      ? "No tracks match your search or filter."
       : state.view.type === "playlist"
         ? "This playlist is empty. Add tracks from All Songs."
         : "Your library is empty — go to Add Music to download something.";
@@ -424,7 +528,76 @@
 
     row.addEventListener("click", () => playQueueAt(index));
 
+    if (reorderEnabled) attachDragHandlers(row, track);
+
     return row;
+  }
+
+  // ---------------- playlist drag-to-reorder ----------------
+
+  let reorderEnabled = false;
+  let dragTrackId = null;
+
+  function clearDropIndicators() {
+    trackListEl.querySelectorAll(".drop-before, .drop-after").forEach((el) => {
+      el.classList.remove("drop-before", "drop-after");
+    });
+  }
+
+  function dropIsAfter(row, e) {
+    const rect = row.getBoundingClientRect();
+    return e.clientY > rect.top + rect.height / 2;
+  }
+
+  function attachDragHandlers(row, track) {
+    row.draggable = true;
+
+    row.addEventListener("dragstart", (e) => {
+      dragTrackId = track.id;
+      row.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", track.id);
+    });
+
+    row.addEventListener("dragend", () => {
+      dragTrackId = null;
+      row.classList.remove("dragging");
+      clearDropIndicators();
+    });
+
+    row.addEventListener("dragover", (e) => {
+      if (dragTrackId === null || dragTrackId === track.id) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      clearDropIndicators();
+      row.classList.add(dropIsAfter(row, e) ? "drop-after" : "drop-before");
+    });
+
+    row.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      const movedId = dragTrackId;
+      const after = dropIsAfter(row, e);
+      clearDropIndicators();
+      if (movedId === null || movedId === track.id) return;
+
+      const pl = currentPlaylist();
+      if (!pl) return;
+      const ids = pl.track_ids.filter((id) => id !== movedId);
+      const targetPos = ids.indexOf(track.id);
+      if (targetPos === -1) return;
+      ids.splice(after ? targetPos + 1 : targetPos, 0, movedId);
+
+      const previous = pl.track_ids;
+      pl.track_ids = ids; // optimistic - the list reorders immediately
+      renderView();
+      try {
+        await api("PUT", `/api/playlists/${pl.id}/order`, { track_ids: ids });
+      } catch (err) {
+        pl.track_ids = previous;
+        renderView();
+        setStatus(err.message, true);
+      }
+    });
   }
 
   function updatePlayingHighlight() {
@@ -718,6 +891,7 @@
       state.shufflePos = pos !== -1 ? pos : 0;
     }
     const track = state.queue[index];
+    applyNormalization(track);
     audio.src = `/audio/${encodeURIComponent(track.id)}`;
     audio.currentTime = 0;
     audio.play().catch(() => {});
@@ -852,25 +1026,63 @@
 
   const VIZ_BARS = 48;
   let audioCtx = null;
+  let gainNode = null;
   let analyser = null;
   let freqData = null;
   let vizRaf = 0;
 
-  function ensureAnalyser() {
+  // audio element -> gain (volume normalization) -> analyser (visualizer) -> speakers
+  function ensureAudioGraph() {
     if (analyser) return true;
     try {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioCtx.createMediaElementSource(audio);
+      gainNode = audioCtx.createGain();
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 512;
       analyser.smoothingTimeConstant = 0.78;
-      source.connect(analyser);
+      source.connect(gainNode);
+      gainNode.connect(analyser);
       analyser.connect(audioCtx.destination);
       freqData = new Uint8Array(analyser.frequencyBinCount);
+      if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
       return true;
     } catch (_) {
-      analyser = null; // visualizer is optional; playback keeps working without it
+      analyser = null; // optional features; plain playback keeps working without the graph
+      gainNode = null;
       return false;
+    }
+  }
+
+  // ---------------- volume normalization ----------------
+  // The server measures each track's loudness and hands back the gain (dB)
+  // that brings it to a common level; it's applied here via the gain node.
+
+  function setGainDb(db) {
+    if (!gainNode) return;
+    gainNode.gain.setTargetAtTime(Math.pow(10, db / 20), audioCtx.currentTime, 0.03);
+  }
+
+  async function applyNormalization(track) {
+    if (state.settings.normalize_volume === false) {
+      setGainDb(0); // no-op if the graph was never built
+      return;
+    }
+    if (!ensureAudioGraph()) return;
+    if (typeof track.gain_db === "number") {
+      setGainDb(track.gain_db);
+      return;
+    }
+    setGainDb(0); // not measured yet - ask the server to measure it now
+    try {
+      const { gain_db } = await api("GET", `/api/tracks/${encodeURIComponent(track.id)}/loudness`);
+      track.gain_db = typeof gain_db === "number" ? gain_db : 0;
+    } catch (_) {
+      return;
+    }
+    const current = state.queue[state.queueIndex];
+    if (current && current.id === track.id && state.settings.normalize_volume !== false) {
+      setGainDb(track.gain_db);
     }
   }
 
@@ -904,7 +1116,7 @@
 
   function startVisualizer() {
     if (state.view.type !== "nowplaying" || audio.paused || vizRaf) return;
-    if (!ensureAnalyser()) return;
+    if (!ensureAudioGraph()) return;
     if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
     vizRaf = requestAnimationFrame(drawVisualizer);
   }
@@ -912,6 +1124,8 @@
   audio.addEventListener("play", () => {
     setHidden(playIcon, true);
     setHidden(pauseIcon, false);
+    // Audio routed through the graph is silent while the context is suspended.
+    if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
     startVisualizer();
   });
   audio.addEventListener("pause", () => {
@@ -1025,7 +1239,9 @@
           const label = job.percent
             ? (job.percent.startsWith("Converting") ? job.percent : `Downloading ${job.percent}`)
             : "Downloading…";
-          setAddStatus(escapeHtml(label));
+          const pct = parseFloat(job.percent);
+          const bar = isFinite(pct) ? `<div class="progress-bar"><div style="width:${Math.min(100, pct)}%"></div></div>` : "";
+          setAddStatus(`<div class="progress-line">${escapeHtml(label)}</div>${bar}`);
           setTimeout(tick, 500);
         } else if (job.status === "done") {
           setAddStatus(job.duplicate
@@ -1048,19 +1264,54 @@
 
   // ---------------- add music: playlist import ----------------
 
-  playlistForm.addEventListener("submit", async (e) => {
+  // Importing a playlist link asks how it should be saved before anything downloads.
+  let pendingPlaylistUrl = "";
+
+  function closePlaylistChoice() {
+    setHidden(playlistChoiceEl, true);
+    pendingPlaylistUrl = "";
+    playlistImportBtn.disabled = false;
+  }
+
+  playlistForm.addEventListener("submit", (e) => {
     e.preventDefault();
     const url = playlistUrlInput.value.trim();
     if (!url) return;
+    pendingPlaylistUrl = url;
     playlistImportBtn.disabled = true;
+    setHidden(playlistChoiceEl, false);
+  });
+
+  async function startPlaylistImport(asPlaylist) {
+    const url = pendingPlaylistUrl;
+    setHidden(playlistChoiceEl, true);
+    pendingPlaylistUrl = "";
+    if (!url) { playlistImportBtn.disabled = false; return; }
     setAddStatus("Reading playlist&hellip;");
     try {
-      const { job_id } = await api("POST", "/api/download", { url, mode: "playlist" });
+      const { job_id } = await api("POST", "/api/download", { url, mode: "playlist", as_playlist: asPlaylist });
       await pollPlaylistJob(job_id);
     } catch (err) {
       setAddStatus(`<span class="progress-error">${escapeHtml(err.message)}</span>`);
       playlistImportBtn.disabled = false;
     }
+  }
+
+  choicePlaylistBtn.addEventListener("click", () => startPlaylistImport(true));
+  choiceSongsBtn.addEventListener("click", () => startPlaylistImport(false));
+  choiceCancelBtn.addEventListener("click", closePlaylistChoice);
+
+  document.querySelectorAll(".add-paste").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        const text = await navigator.clipboard.readText();
+        const input = document.getElementById(btn.dataset.target);
+        input.value = text.trim();
+        input.focus();
+      } catch (_) {
+        setAddStatus('<span class="progress-error">Could not read the clipboard &mdash; paste with Ctrl+V instead.</span>');
+      }
+    });
   });
 
   function renderPlaylistProgress(job) {
@@ -1068,10 +1319,17 @@
     const done = job.added.length + skipped.length + job.failed.length;
     const total = job.total || done;
     const parts = [];
-    let line = `Importing "${escapeHtml(job.playlist_name || "playlist")}"`;
+    const asPlaylist = job.as_playlist !== false;
+    let line = asPlaylist
+      ? `Importing "${escapeHtml(job.playlist_name || "playlist")}"`
+      : `Importing songs from "${escapeHtml(job.playlist_name || "playlist")}"`;
     if (total) line += ` &mdash; ${job.added.length + skipped.length}/${total}`;
     if (job.status === "downloading" && job.current_title) line += ` &mdash; now: ${escapeHtml(job.current_title)}`;
     parts.push(`<div class="progress-line">${line}</div>`);
+    if (total && job.status === "downloading") {
+      const pct = Math.round(((job.added.length + skipped.length + job.failed.length) / total) * 100);
+      parts.push(`<div class="progress-bar"><div style="width:${pct}%"></div></div>`);
+    }
     if (job.added.length) {
       parts.push(`<div class="progress-added">Added: ${job.added.map((t) => escapeHtml(t.title)).join(", ")}</div>`);
     }
@@ -1083,7 +1341,7 @@
     }
     if (job.status === "done") {
       const plural = (n) => `${n} track${n === 1 ? "" : "s"}`;
-      let summary = `Done &mdash; added ${plural(job.added.length)}`;
+      let summary = `Done &mdash; added ${plural(job.added.length)}${asPlaylist ? "" : " to your library"}`;
       if (skipped.length) summary += `, ${skipped.length} already in library`;
       if (job.failed.length) summary += `, ${job.failed.length} failed`;
       parts.push(`<div class="progress-done">${summary}.</div>`);
@@ -1247,6 +1505,55 @@
     resetIdleTimer();
   });
 
+  deleteAllPlaylistsBtn.addEventListener("click", async () => {
+    const count = state.playlists.length;
+    if (count === 0) {
+      setStatus("There are no playlists to delete.", false);
+      return;
+    }
+    if (!confirm(`Delete all ${count} playlist${count === 1 ? "" : "s"}? Your songs stay in the library, but this can't be undone.`)) return;
+    try {
+      await api("DELETE", "/api/playlists");
+      await loadPlaylists();
+      setHidden(settingsDropdown, true);
+      if (state.view.type === "playlist") openDashboard();
+      else { renderSidebar(); renderView(); }
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+  });
+
+  deleteAllSongsBtn.addEventListener("click", async () => {
+    const count = state.library.length;
+    if (count === 0) {
+      setStatus("There are no songs to delete.", false);
+      return;
+    }
+    if (!confirm(`Delete all ${count} song${count === 1 ? "" : "s"} from your library? This permanently deletes the files and can't be undone. Playlists are kept but emptied.`)) return;
+    try {
+      await api("DELETE", "/api/tracks");
+      // Stop playback and clear the queue - the files it points at are gone.
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      state.queue = [];
+      state.queueIndex = -1;
+      updateNowPlayingUI(null);
+      await Promise.all([loadLibrary(), loadPlaylists()]);
+      setHidden(settingsDropdown, true);
+      renderSidebar();
+      renderView();
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+  });
+
+  normalizeToggle.addEventListener("change", () => {
+    saveSettings({ normalize_volume: normalizeToggle.checked });
+    const current = state.queue[state.queueIndex];
+    if (current) applyNormalization(current);
+  });
+
   function toggleSettingsDropdown() {
     if (!settingsDropdown.hasAttribute("hidden")) {
       setHidden(settingsDropdown, true);
@@ -1345,6 +1652,7 @@
     }
     applyAccentColor(state.settings.accent_color);
     idleTimeoutInput.value = state.settings.idle_timeout_minutes;
+    normalizeToggle.checked = state.settings.normalize_volume !== false;
     resetIdleTimer();
     renderSidebar();
     renderView();
