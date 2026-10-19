@@ -474,7 +474,6 @@ input {
   border-radius: var(--radius-lg);
   overflow: hidden;
   background: var(--bg);
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
 }
 
 .nowplaying-art img {
@@ -514,6 +513,12 @@ input {
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 100%;
+}
+
+.nowplaying-visualizer {
+  width: 100%;
+  height: 80px;
+  margin-top: 6px;
 }
 
 /* ---------------- add music page ---------------- */

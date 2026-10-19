@@ -53,6 +53,7 @@
   const nowplayingCoverFallback = document.getElementById("nowplaying-cover-fallback");
   const nowplayingTitle = document.getElementById("nowplaying-title");
   const nowplayingArtist = document.getElementById("nowplaying-artist");
+  const vizCanvas = document.getElementById("nowplaying-visualizer");
 
   const settingsBtn = document.getElementById("settings-btn");
   const settingsDropdown = document.getElementById("settings-dropdown");
@@ -299,6 +300,7 @@
       viewTitle.textContent = "Now Playing";
       setHidden(nowplayingPageEl, false);
       clearIdleHint();
+      startVisualizer();
       return;
     }
     hideAllPages();
@@ -843,9 +845,74 @@
   playBtn.addEventListener("click", playPause);
   repeatBtn.addEventListener("click", cycleRepeat);
 
+  // ---------------- now playing visualizer ----------------
+  // Frequency bars from a Web Audio AnalyserNode. The audio is served from the
+  // same origin, so routing it through the graph is allowed; the graph is built
+  // lazily on first play because browsers require a user gesture to start it.
+
+  const VIZ_BARS = 48;
+  let audioCtx = null;
+  let analyser = null;
+  let freqData = null;
+  let vizRaf = 0;
+
+  function ensureAnalyser() {
+    if (analyser) return true;
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaElementSource(audio);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.78;
+      source.connect(analyser);
+      analyser.connect(audioCtx.destination);
+      freqData = new Uint8Array(analyser.frequencyBinCount);
+      return true;
+    } catch (_) {
+      analyser = null; // visualizer is optional; playback keeps working without it
+      return false;
+    }
+  }
+
+  function drawVisualizer() {
+    vizRaf = 0;
+    if (state.view.type !== "nowplaying" || audio.paused || !analyser) return;
+    analyser.getByteFrequencyData(freqData);
+
+    const ctx = vizCanvas.getContext("2d");
+    const w = vizCanvas.width;
+    const h = vizCanvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const rgb = getComputedStyle(document.documentElement).getPropertyValue("--accent-rgb").trim() || "255, 138, 61";
+    const usable = Math.floor(freqData.length * 0.6); // top bins are mostly empty
+    const slot = w / VIZ_BARS;
+    const barW = slot * 0.62;
+    for (let i = 0; i < VIZ_BARS; i++) {
+      // Spread low frequencies over more bars than high ones.
+      const bin = Math.floor(Math.pow(i / VIZ_BARS, 1.5) * usable);
+      const level = Math.pow(freqData[bin] / 255, 1.3);
+      const barH = Math.max(4, level * h);
+      const x = i * slot + (slot - barW) / 2;
+      ctx.fillStyle = `rgb(${rgb})`;
+      ctx.beginPath();
+      ctx.roundRect(x, h - barH, barW, barH, barW / 2);
+      ctx.fill();
+    }
+    vizRaf = requestAnimationFrame(drawVisualizer);
+  }
+
+  function startVisualizer() {
+    if (state.view.type !== "nowplaying" || audio.paused || vizRaf) return;
+    if (!ensureAnalyser()) return;
+    if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+    vizRaf = requestAnimationFrame(drawVisualizer);
+  }
+
   audio.addEventListener("play", () => {
     setHidden(playIcon, true);
     setHidden(pauseIcon, false);
+    startVisualizer();
   });
   audio.addEventListener("pause", () => {
     setHidden(playIcon, false);
