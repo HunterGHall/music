@@ -1208,10 +1208,34 @@
 
   // ---------------- keyboard shortcuts ----------------
 
+  // Fn is handled in keyboard firmware and never reaches the page, so Fn+J/K/L
+  // arrives as plain J/K/L (or as media keys on keyboards that remap them).
+  // Handle both: back = J / MediaTrackPrevious, pause = K / MediaPlayPause,
+  // next = L / MediaTrackNext.
   document.addEventListener("keydown", (e) => {
-    if (e.target.tagName === "INPUT" || e.target.isContentEditable) return;
-    if (e.code === "Space") { e.preventDefault(); playPause(); }
+    const typing = e.target.tagName === "INPUT" || e.target.isContentEditable;
+
+    // Dedicated media keys are safe to honour even while typing in a field.
+    if (e.code === "MediaTrackPrevious") { e.preventDefault(); goPrev(); return; }
+    if (e.code === "MediaTrackNext") { e.preventDefault(); goNext(false); return; }
+    if (e.code === "MediaPlayPause") { e.preventDefault(); playPause(); return; }
+
+    if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.code === "Space" || e.code === "KeyK") { e.preventDefault(); playPause(); }
+    else if (e.code === "KeyJ") { e.preventDefault(); goPrev(); }
+    else if (e.code === "KeyL") { e.preventDefault(); goNext(false); }
   });
+
+  // Lets the OS route hardware media keys / overlay controls to the player
+  // even when the window isn't focused.
+  if ("mediaSession" in navigator) {
+    const ms = navigator.mediaSession;
+    const setHandler = (action, fn) => { try { ms.setActionHandler(action, fn); } catch (_) {} };
+    setHandler("play", () => { if (audio.paused) playPause(); });
+    setHandler("pause", () => { if (!audio.paused) playPause(); });
+    setHandler("previoustrack", goPrev);
+    setHandler("nexttrack", () => goNext(false));
+  }
 
   // ---------------- init ----------------
 

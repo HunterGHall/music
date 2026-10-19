@@ -26,6 +26,16 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 app = Flask(__name__, static_folder=None)
 
+
+@app.after_request
+def _no_cache_static(response):
+    # This is a single-user local app served fresh each launch - never let
+    # the WebView2/browser cache stale HTML/CSS/JS across code changes.
+    if request.path.startswith(("/css/", "/js/")) or request.path == "/":
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+    return response
+
+
 _lock = threading.Lock()
 _jobs = {}  # job_id -> dict, see _new_job()
 
