@@ -1183,6 +1183,25 @@ input {
 
 .modal input:focus { border-color: var(--accent); }
 
+.modal-wide { width: 380px; }
+
+.modal-field {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.modal-field + .modal-field { margin-top: 14px; }
+
+.modal-field input {
+  display: block;
+  margin-top: 6px;
+  font-weight: 400;
+}
+
+.modal-reset { margin-right: auto; }
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;

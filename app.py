@@ -21,6 +21,8 @@ STATS_FILE = DATA_DIR / "stats.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 SOURCES_FILE = DATA_DIR / "sources.json"
 LOUDNESS_FILE = DATA_DIR / "loudness.json"
+META_FILE = DATA_DIR / "metadata.json"        # user-edited title/artist per track
+PLAYER_STATE_FILE = DATA_DIR / "player_state.json"
 TRANSITION_MODES = ("off", "gapless", "crossfade")
 DEFAULT_SETTINGS = {
     "accent_color": "#ff8a3d",
@@ -86,14 +88,35 @@ def _track_duration(path):
     return _duration_cache[key]
 
 
-def _track_fields(path):
-    """(title, artist, duration) - artist comes from an "Artist - Title.ext"
-    filename, the convention downloads are saved under below."""
+def _load_meta():
+    if not META_FILE.is_file():
+        return {}
+    try:
+        return json.loads(META_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_meta(meta):
+    DATA_DIR.mkdir(exist_ok=True)
+    META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+
+def _track_fields(path, meta=None):
+    """(title, artist, duration) - by default the artist comes from an
+    "Artist - Title.ext" filename, the convention downloads are saved under
+    below; a title/artist the user edited in-app takes precedence. (Edits are
+    stored beside the file rather than renaming it, so everything that refers
+    to the track by filename - playlists, play counts - keeps working.)"""
     name = path.stem
     if " - " in name:
         artist, title = name.split(" - ", 1)
     else:
         artist, title = "", name
+    override = (meta if meta is not None else _load_meta()).get(path.name)
+    if override:
+        title = override.get("title", title)
+        artist = override.get("artist", artist)
     return title, artist, _track_duration(path)
 
 
@@ -101,10 +124,12 @@ def _cover_path_for(audio_path):
     return COVERS_DIR / (audio_path.stem + ".jpg")
 
 
-def _track_to_dict(path, stats=None, loudness=None):
-    title, artist, duration = _track_fields(path)
+def _track_to_dict(path, stats=None, loudness=None, meta=None):
+    meta = meta if meta is not None else _load_meta()
+    title, artist, duration = _track_fields(path, meta)
     cover = _cover_path_for(path)
     return {
+        "edited": path.name in meta,
         "gain_db": _cached_gain_db(path, loudness),
         "id": path.name,
         "title": title,
@@ -629,7 +654,30 @@ def serve_audio(name):
 def api_library():
     stats = _load_stats()
     loudness = _load_loudness()
-    return jsonify([_track_to_dict(p, stats, loudness) for p in find_track_paths()])
+    meta = _load_meta()
+    return jsonify([_track_to_dict(p, stats, loudness, meta) for p in find_track_paths()])
+
+
+@app.patch("/api/tracks/<path:track_id>/meta")
+def api_edit_track_meta(track_id):
+    """Edits a track's title/artist ({title, artist}), or restores the
+    filename-derived ones ({reset: true})."""
+    path = LIBRARY_DIR / track_id
+    if not path.is_file():
+        abort(404)
+    body = request.get_json(silent=True) or {}
+    with _lock:
+        meta = _load_meta()
+        if body.get("reset"):
+            meta.pop(track_id, None)
+        else:
+            title = str(body.get("title", "")).strip()[:200]
+            artist = str(body.get("artist", "")).strip()[:200]
+            if not title:
+                return jsonify({"error": "Title required"}), 400
+            meta[track_id] = {"title": title, "artist": artist}
+        _save_meta(meta)
+    return jsonify(_track_to_dict(path, _load_stats(), _load_loudness(), meta))
 
 
 @app.get("/api/tracks/<path:track_id>/loudness")
@@ -671,6 +719,7 @@ def api_delete_all_tracks():
         DATA_DIR.mkdir(exist_ok=True)
         SOURCES_FILE.write_text("{}", encoding="utf-8")
         LOUDNESS_FILE.write_text("{}", encoding="utf-8")
+        _save_meta({})
     return jsonify({"deleted": deleted})
 
 
@@ -692,6 +741,34 @@ def api_delete_track(track_id):
         if track_id in stats:
             del stats[track_id]
             _save_stats(stats)
+        meta = _load_meta()
+        if meta.pop(track_id, None) is not None:
+            _save_meta(meta)
+    return "", 204
+
+
+# ---------------- routes: remembered player state ----------------
+
+@app.get("/api/state")
+def api_get_state():
+    if not PLAYER_STATE_FILE.is_file():
+        return jsonify({})
+    try:
+        return jsonify(json.loads(PLAYER_STATE_FILE.read_text(encoding="utf-8")))
+    except Exception:
+        return jsonify({})
+
+
+@app.post("/api/state")
+def api_save_state():
+    # Also posted via navigator.sendBeacon when the window closes.
+    if request.content_length and request.content_length > 2_000_000:
+        return jsonify({"error": "Too large"}), 413
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"error": "Object required"}), 400
+    DATA_DIR.mkdir(exist_ok=True)
+    PLAYER_STATE_FILE.write_text(json.dumps(body), encoding="utf-8")
     return "", 204
 
 

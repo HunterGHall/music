@@ -129,6 +129,12 @@
   const volume = document.getElementById("volume");
   const muteBtn = document.getElementById("mute-btn");
 
+  const editBackdrop = document.getElementById("edit-backdrop");
+  const editTitleInput = document.getElementById("edit-title");
+  const editArtistInput = document.getElementById("edit-artist");
+  const editResetBtn = document.getElementById("edit-reset");
+  const editCancelBtn = document.getElementById("edit-cancel");
+  const editSaveBtn = document.getElementById("edit-save");
   const modalBackdrop = document.getElementById("modal-backdrop");
   const modalTitle = document.getElementById("modal-title");
   const modalInput = document.getElementById("modal-input");
@@ -385,14 +391,17 @@
   sortSelect.addEventListener("change", () => {
     state.sortKey = sortSelect.value;
     state.sortDir = SORT_DESC_BY_DEFAULT.has(state.sortKey) ? "desc" : "asc";
+    scheduleSaveState();
     renderView();
   });
   sortDirBtn.addEventListener("click", () => {
     state.sortDir = state.sortDir === "desc" ? "asc" : "desc";
+    scheduleSaveState();
     renderView();
   });
   artistSelect.addEventListener("change", () => {
     state.artistFilter = artistSelect.value;
+    scheduleSaveState();
     renderView();
   });
 
@@ -559,6 +568,16 @@
       });
       actions.appendChild(removeBtn);
     }
+
+    const editBtn = document.createElement("button");
+    editBtn.className = "icon-btn";
+    editBtn.title = "Edit song info";
+    editBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    editBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openEditTrack(track);
+    });
+    actions.appendChild(editBtn);
 
     const deleteBtn = document.createElement("button");
     deleteBtn.className = "icon-btn danger";
@@ -934,11 +953,16 @@
     state.wrapOrder = null;
   }
 
-  function toggleShuffle() {
-    state.shuffle = !state.shuffle;
+  function syncShuffleUi() {
     shuffleBtn.classList.toggle("active", state.shuffle);
     shuffleBtn.title = state.shuffle ? "Shuffle on" : "Shuffle off";
+  }
+
+  function toggleShuffle() {
+    state.shuffle = !state.shuffle;
+    syncShuffleUi();
     if (state.shuffle) regenerateShuffleOrder();
+    scheduleSaveState();
   }
 
   function recordPlay(track) {
@@ -1141,11 +1165,16 @@
     playQueueAt(prev);
   }
 
-  function cycleRepeat() {
-    state.repeat = state.repeat === "off" ? "all" : state.repeat === "all" ? "one" : "off";
+  function syncRepeatUi() {
     repeatBtn.classList.toggle("active", state.repeat !== "off");
     repeatBtn.title = state.repeat === "off" ? "Repeat off" : state.repeat === "all" ? "Repeat all" : "Repeat one";
     setHidden(repeatOneDot, state.repeat !== "one");
+  }
+
+  function cycleRepeat() {
+    state.repeat = state.repeat === "off" ? "all" : state.repeat === "all" ? "one" : "off";
+    syncRepeatUi();
+    scheduleSaveState();
   }
 
   shuffleBtn.addEventListener("click", toggleShuffle);
@@ -1174,6 +1203,7 @@
     queueCountEl.textContent = n;
     setHidden(queueCountEl, n === 0);
     if (state.view.type === "queue") renderQueuePage();
+    scheduleSaveState();
   }
 
   function enqueue(track, atFront) {
@@ -1597,6 +1627,7 @@
       if (el !== audio) return;
       setHidden(playIcon, false);
       setHidden(pauseIcon, true);
+      scheduleSaveState();
     });
     el.addEventListener("ended", () => {
       if (el === audio) goNext(true);
@@ -1632,6 +1663,7 @@
     setPlayerVolume(volume.value / 100);
     setPlayerMuted(false);
     volume.style.setProperty("--fill", `${volume.value}%`);
+    scheduleSaveState();
   });
 
   let lastVolume = 70;
@@ -1646,6 +1678,7 @@
       volume.value = 0;
     }
     volume.style.setProperty("--fill", `${volume.value}%`);
+    scheduleSaveState();
   });
 
   // ---------------- deleting tracks ----------------
@@ -2118,6 +2151,172 @@
     setHandler("nexttrack", () => goNext(false));
   }
 
+  // ---------------- edit song info ----------------
+
+  let editingTrack = null;
+
+  function openEditTrack(track) {
+    editingTrack = track;
+    editTitleInput.value = track.title;
+    editArtistInput.value = track.artist || "";
+    setHidden(editResetBtn, !track.edited);
+    setHidden(editBackdrop, false);
+    editTitleInput.focus();
+    editTitleInput.select();
+  }
+
+  function closeEditTrack() {
+    setHidden(editBackdrop, true);
+    editingTrack = null;
+  }
+
+  // Copies the edited fields onto every in-memory copy of the track (the
+  // library, the play queue, the user's queue, the decks) so nothing is stale.
+  function applyTrackUpdate(updated) {
+    const fields = { title: updated.title, artist: updated.artist, edited: updated.edited };
+    const copies = [
+      ...state.library, ...state.queue, ...state.upNext.map((e) => e.track),
+      state.current, ...decks.map((d) => d.track),
+    ];
+    for (const t of copies) {
+      if (t && t.id === updated.id) Object.assign(t, fields);
+    }
+    if (state.current && state.current.id === updated.id) updateNowPlayingUI(state.current);
+  }
+
+  async function saveEditTrack(reset) {
+    if (!editingTrack) return;
+    const title = editTitleInput.value.trim();
+    if (!reset && !title) {
+      editTitleInput.focus();
+      return;
+    }
+    try {
+      const updated = await api("PATCH", `/api/tracks/${encodeURIComponent(editingTrack.id)}/meta`,
+        reset ? { reset: true } : { title, artist: editArtistInput.value.trim() });
+      applyTrackUpdate(updated);
+      closeEditTrack();
+      renderView();
+      onQueueChanged();
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+  }
+
+  editSaveBtn.addEventListener("click", () => saveEditTrack(false));
+  editResetBtn.addEventListener("click", () => saveEditTrack(true));
+  editCancelBtn.addEventListener("click", closeEditTrack);
+  editBackdrop.addEventListener("click", (e) => {
+    if (e.target === editBackdrop) closeEditTrack();
+  });
+  [editTitleInput, editArtistInput].forEach((input) => {
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); saveEditTrack(false); }
+      if (e.key === "Escape") { e.preventDefault(); closeEditTrack(); }
+    });
+  });
+
+  // ---------------- remembered player state ----------------
+  // The current song + position, the queue, shuffle/repeat, volume and the
+  // list sorting are saved on the server (data/player_state.json) and put back
+  // on launch - paused, so the app never starts making noise by itself.
+
+  let stateRestored = false;
+  let saveStateTimer = 0;
+  const SORT_KEYS = ["default", "title", "artist", "plays", "duration", "added"];
+
+  function snapshotState() {
+    const contextTrack = state.queue[state.queueIndex];
+    return {
+      version: 1,
+      currentId: state.current ? state.current.id : null,
+      fromUpNext: state.fromUpNext,
+      position: state.current ? audio.currentTime || 0 : 0,
+      contextId: contextTrack ? contextTrack.id : null,
+      queue: state.queue.map((t) => t.id),
+      upNext: state.upNext.map((e) => e.track.id),
+      shuffle: state.shuffle,
+      repeat: state.repeat,
+      volume: audio.muted ? lastVolume : Number(volume.value),
+      sortKey: state.sortKey,
+      sortDir: state.sortDir,
+      artistFilter: state.artistFilter,
+    };
+  }
+
+  function saveStateNow() {
+    if (!stateRestored) return;
+    clearTimeout(saveStateTimer);
+    api("POST", "/api/state", snapshotState()).catch(() => {});
+  }
+
+  function scheduleSaveState() {
+    if (!stateRestored) return;
+    clearTimeout(saveStateTimer);
+    saveStateTimer = setTimeout(saveStateNow, 800);
+  }
+
+  function restoreState(saved) {
+    if (!saved || typeof saved !== "object") return;
+    const byId = new Map(state.library.map((t) => [t.id, t]));
+    const pick = (ids) => (Array.isArray(ids) ? ids : []).map((id) => byId.get(id)).filter(Boolean);
+
+    if (typeof saved.volume === "number" && saved.volume >= 0 && saved.volume <= 100) {
+      volume.value = saved.volume;
+      volume.style.setProperty("--fill", `${saved.volume}%`);
+      setPlayerVolume(saved.volume / 100);
+      lastVolume = saved.volume || 70;
+    }
+    if (SORT_KEYS.includes(saved.sortKey)) {
+      state.sortKey = saved.sortKey;
+      state.sortDir = saved.sortDir === "desc" ? "desc" : "asc";
+    }
+    if (typeof saved.artistFilter === "string") state.artistFilter = saved.artistFilter;
+    state.repeat = ["off", "all", "one"].includes(saved.repeat) ? saved.repeat : "off";
+    syncRepeatUi();
+
+    state.queue = pick(saved.queue);
+    state.queueIndex = saved.contextId ? state.queue.findIndex((t) => t.id === saved.contextId) : -1;
+    state.upNext = pick(saved.upNext).map((track) => ({ qid: ++qidCounter, track }));
+    state.shuffle = saved.shuffle === true;
+    syncShuffleUi();
+    if (state.shuffle) regenerateShuffleOrder();
+
+    // Bring the song back (paused) at the position it was left at.
+    const current = byId.get(saved.currentId);
+    if (current) {
+      state.current = current;
+      state.fromUpNext = saved.fromUpNext === true;
+      loadDeck(activeDeck, current);
+      const position = Number(saved.position) || 0;
+      if (position > 1) {
+        const el = activeDeck.el;
+        el.addEventListener("loadedmetadata", () => {
+          if (position < el.duration - 2) el.currentTime = position;
+        }, { once: true });
+      }
+      updateNowPlayingUI(current);
+    }
+    onQueueChanged();
+  }
+
+  async function loadSavedState() {
+    try {
+      return await api("GET", "/api/state");
+    } catch (_) {
+      return {};
+    }
+  }
+
+  // Keep the saved position fresh while playing, and flush it when the window closes.
+  setInterval(() => { if (!audio.paused && state.current) saveStateNow(); }, 5000);
+  window.addEventListener("pagehide", () => {
+    if (!stateRestored) return;
+    try {
+      navigator.sendBeacon("/api/state", new Blob([JSON.stringify(snapshotState())], { type: "application/json" }));
+    } catch (_) { /* best effort */ }
+  });
+
   // ---------------- init ----------------
 
   async function init() {
@@ -2137,6 +2336,12 @@
     idleTimeoutInput.value = state.settings.idle_timeout_minutes;
     normalizeToggle.checked = state.settings.normalize_volume !== false;
     syncTransitionControls();
+    try {
+      restoreState(await loadSavedState());
+    } catch (err) {
+      console.warn("Could not restore the previous session", err);
+    }
+    stateRestored = true;
     resetIdleTimer();
     renderSidebar();
     renderView();
