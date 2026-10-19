@@ -21,7 +21,14 @@ STATS_FILE = DATA_DIR / "stats.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 SOURCES_FILE = DATA_DIR / "sources.json"
 LOUDNESS_FILE = DATA_DIR / "loudness.json"
-DEFAULT_SETTINGS = {"accent_color": "#ff8a3d", "idle_timeout_minutes": 2, "normalize_volume": True}
+TRANSITION_MODES = ("off", "gapless", "crossfade")
+DEFAULT_SETTINGS = {
+    "accent_color": "#ff8a3d",
+    "idle_timeout_minutes": 2,
+    "normalize_volume": True,
+    "transition_mode": "gapless",   # off | gapless | crossfade
+    "crossfade_seconds": 5,
+}
 TARGET_LUFS = -14.0  # what every track is levelled to (streaming-service norm)
 STATIC_DIR = BASE_DIR / "static"
 AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".flac", ".ogg", ".opus", ".aac")
@@ -705,6 +712,15 @@ def api_update_settings():
             settings["accent_color"] = color
         if isinstance(body.get("normalize_volume"), bool):
             settings["normalize_volume"] = body["normalize_volume"]
+        if body.get("transition_mode") in TRANSITION_MODES:
+            settings["transition_mode"] = body["transition_mode"]
+        if "crossfade_seconds" in body:
+            try:
+                seconds = float(body["crossfade_seconds"])
+                if 1 <= seconds <= 12:
+                    settings["crossfade_seconds"] = seconds
+            except (TypeError, ValueError):
+                pass
         if "idle_timeout_minutes" in body:
             try:
                 minutes = float(body["idle_timeout_minutes"])

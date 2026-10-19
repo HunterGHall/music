@@ -141,6 +141,93 @@
       </section>
     </div>
 
+    <div id="settings-page" class="settings-page" hidden>
+      <section class="settings-card">
+        <h2>Playback</h2>
+        <div class="settings-item">
+          <div class="settings-item-text">
+            <label for="normalize-toggle">Normalize volume</label>
+            <p>Plays loud and quiet songs at about the same level.</p>
+          </div>
+          <input id="normalize-toggle" class="switch" type="checkbox" checked>
+        </div>
+        <div class="settings-item">
+          <div class="settings-item-text">
+            <label>Transitions</label>
+            <p>How one song leads into the next. Gapless removes the pause between songs; crossfade overlaps them.</p>
+          </div>
+          <div id="transition-mode" class="segmented">
+            <button type="button" data-mode="off">Off</button>
+            <button type="button" data-mode="gapless">Gapless</button>
+            <button type="button" data-mode="crossfade">Crossfade</button>
+          </div>
+        </div>
+        <div id="crossfade-row" class="settings-item" hidden>
+          <div class="settings-item-text">
+            <label for="crossfade-seconds">Crossfade length</label>
+            <p>How long the two songs overlap.</p>
+          </div>
+          <div class="settings-inline">
+            <input id="crossfade-seconds" class="slider" type="range" min="1" max="12" step="1" value="5">
+            <span id="crossfade-value" class="settings-unit">5 s</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-card">
+        <h2>Appearance</h2>
+        <div class="settings-item">
+          <div class="settings-item-text">
+            <label>Theme color</label>
+            <p>The accent color used across the app.</p>
+          </div>
+          <div class="color-swatches" id="color-swatches">
+            <button class="color-swatch" data-color="#ff8a3d" style="background:#ff8a3d" title="Orange"></button>
+            <button class="color-swatch" data-color="#4f9dff" style="background:#4f9dff" title="Blue"></button>
+            <button class="color-swatch" data-color="#4fd68c" style="background:#4fd68c" title="Green"></button>
+            <button class="color-swatch" data-color="#ff5c8a" style="background:#ff5c8a" title="Pink"></button>
+            <button class="color-swatch" data-color="#b06bff" style="background:#b06bff" title="Purple"></button>
+            <button class="color-swatch" data-color="#ffd54f" style="background:#ffd54f" title="Yellow"></button>
+            <label class="color-swatch color-swatch-custom" title="Custom color">
+              <input id="custom-color-input" type="color" value="#ff8a3d">
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-card">
+        <h2>General</h2>
+        <div class="settings-item">
+          <div class="settings-item-text">
+            <label for="idle-timeout-input">Inactive timeout</label>
+            <p>After this long without activity, Now Playing gets a small hint dot.</p>
+          </div>
+          <div class="settings-inline">
+            <input id="idle-timeout-input" type="number" min="1" max="180" step="1">
+            <span class="settings-unit">min</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-card">
+        <h2>Danger zone</h2>
+        <div class="settings-item">
+          <div class="settings-item-text">
+            <label>Delete all playlists</label>
+            <p>Removes every playlist. Your songs stay in the library.</p>
+          </div>
+          <button id="delete-all-playlists-btn" class="btn-danger" type="button">Delete all</button>
+        </div>
+        <div class="settings-item">
+          <div class="settings-item-text">
+            <label>Delete all songs</label>
+            <p>Deletes every song file from your library. Playlists are kept but emptied.</p>
+          </div>
+          <button id="delete-all-songs-btn" class="btn-danger" type="button">Delete all</button>
+        </div>
+      </section>
+    </div>
+
     <div id="add-page" class="add-page" hidden>
       <p class="add-intro">Paste a link and it's downloaded into your library &mdash; no accounts, saved locally.</p>
 
@@ -265,44 +352,6 @@
 </div>
 
 <div id="add-popover" class="popover" hidden></div>
-
-<div id="settings-dropdown" class="popover settings-dropdown" hidden>
-  <div class="settings-row">
-    <label for="idle-timeout-input">Inactive timeout</label>
-    <div class="settings-inline">
-      <input id="idle-timeout-input" type="number" min="1" max="180" step="1">
-      <span class="settings-unit">min</span>
-    </div>
-  </div>
-  <div class="settings-row">
-    <div class="settings-toggle">
-      <label for="normalize-toggle">Normalize volume</label>
-      <input id="normalize-toggle" type="checkbox" checked>
-    </div>
-    <span class="settings-hint">Plays loud and quiet songs at about the same level.</span>
-  </div>
-  <div class="settings-row">
-    <label>Theme color</label>
-    <div class="color-swatches" id="color-swatches">
-      <button class="color-swatch" data-color="#ff8a3d" style="background:#ff8a3d" title="Orange"></button>
-      <button class="color-swatch" data-color="#4f9dff" style="background:#4f9dff" title="Blue"></button>
-      <button class="color-swatch" data-color="#4fd68c" style="background:#4fd68c" title="Green"></button>
-      <button class="color-swatch" data-color="#ff5c8a" style="background:#ff5c8a" title="Pink"></button>
-      <button class="color-swatch" data-color="#b06bff" style="background:#b06bff" title="Purple"></button>
-      <button class="color-swatch" data-color="#ffd54f" style="background:#ffd54f" title="Yellow"></button>
-      <label class="color-swatch color-swatch-custom" title="Custom color">
-        <input id="custom-color-input" type="color" value="#ff8a3d">
-      </label>
-    </div>
-  </div>
-  <div class="settings-row settings-danger">
-    <label>Danger zone</label>
-    <button id="delete-all-playlists-btn" class="btn-danger" type="button">Delete all playlists</button>
-    <span class="settings-hint">Removes every playlist. Your songs stay in the library.</span>
-    <button id="delete-all-songs-btn" class="btn-danger" type="button">Delete all songs</button>
-    <span class="settings-hint">Deletes every song file from your library. Playlists are kept but emptied.</span>
-  </div>
-</div>
 
 <script src="/js/app.js"></script>
 </body>
