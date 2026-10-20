@@ -13,6 +13,9 @@
     current: null,      // the track that is loaded/playing right now
     fromUpNext: false,  // whether `current` came from upNext rather than the context
     wrapOrder: null,    // pre-rolled shuffle order used when repeat-all wraps around
+    selected: new Set(),   // ids of the songs ticked in the current list (multi-select)
+    selectionMode: false,  // the "Select" button is on (checkboxes show even with nothing ticked)
+    selectAnchor: null,    // last song ticked, the start of a shift+click range
     repeat: "off",       // off | all | one
     searchQuery: "",
     sortKey: "default",  // default | title | artist | plays | duration | added
@@ -59,6 +62,15 @@
   const searchInput = document.getElementById("search-input");
   const searchClearBtn = document.getElementById("search-clear");
   const listControlsEl = document.getElementById("list-controls");
+  const selectToggle = document.getElementById("select-toggle");
+  const selectionBarEl = document.getElementById("selection-bar");
+  const selectionCountEl = document.getElementById("selection-count");
+  const selAllBtn = document.getElementById("sel-all");
+  const selPlayNextBtn = document.getElementById("sel-play-next");
+  const selQueueBtn = document.getElementById("sel-queue");
+  const selPlaylistBtn = document.getElementById("sel-playlist");
+  const selRemoveBtn = document.getElementById("sel-remove");
+  const selDeleteBtn = document.getElementById("sel-delete");
   const sortSelect = document.getElementById("sort-select");
   const sortDirBtn = document.getElementById("sort-dir-btn");
   const artistSelect = document.getElementById("artist-select");
@@ -407,6 +419,7 @@
 
   function hideAllPages() {
     setHidden(listControlsEl, true);
+    setHidden(selectionBarEl, true);
     setHidden(searchBox, true);
     setHidden(dashboardPageEl, true);
     setHidden(addPageEl, true);
@@ -468,6 +481,7 @@
       matchesArtistFilter(t)
       && (!query || t.title.toLowerCase().includes(query) || (t.artist || "").toLowerCase().includes(query)));
     const tracks = sortTracks(filtered);
+    displayedTracks = tracks;
     // Dragging only makes sense when the list on screen IS the playlist's order.
     reorderEnabled = state.view.type === "playlist" && state.sortKey === "default"
       && !query && !state.artistFilter;
@@ -490,12 +504,20 @@
     });
 
     updatePlayingHighlight();
+    updateSelectionUi();
   }
 
   function buildTrackRow(track, index) {
     const row = document.createElement("div");
     row.className = "track-row";
     row.dataset.id = track.id;
+
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.className = "track-check";
+    check.tabIndex = -1;
+    check.checked = state.selected.has(track.id);
+    row.appendChild(check);
 
     let cover;
     if (track.cover) {
@@ -533,7 +555,7 @@
     addBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
     addBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      openAddPopover(track, addBtn);
+      openAddPopover([track], addBtn);
     });
     const playNextBtn = document.createElement("button");
     playNextBtn.className = "icon-btn";
@@ -599,7 +621,16 @@
     row.appendChild(duration);
     row.appendChild(actions);
 
-    row.addEventListener("click", () => playQueueAt(index));
+    // Shift-click selects a range, Ctrl/Cmd-click toggles one, and while
+    // anything is selected a plain click toggles too (double-click plays).
+    row.addEventListener("click", (e) => {
+      if (e.shiftKey) { selectRangeTo(track.id); return; }
+      if (e.ctrlKey || e.metaKey || selectionActive()) { toggleSelected(track.id); return; }
+      playQueueAt(index);
+    });
+    row.addEventListener("dblclick", () => {
+      if (selectionActive()) playQueueAt(index);
+    });
 
     if (reorderEnabled) attachDragHandlers(row, track);
 
@@ -797,6 +828,7 @@
   function openDashboard() {
     state.view = { type: "dashboard" };
     resetSearch();
+    resetSelection();
     renderSidebar();
     renderView();
   }
@@ -804,6 +836,7 @@
   function openLibrary() {
     state.view = { type: "library" };
     resetSearch();
+    resetSelection();
     renderSidebar();
     renderView();
   }
@@ -811,6 +844,7 @@
   function openPlaylist(id) {
     state.view = { type: "playlist", id };
     resetSearch();
+    resetSelection();
     renderSidebar();
     renderView();
   }
@@ -818,6 +852,7 @@
   function openAdd() {
     state.view = { type: "add" };
     resetSearch();
+    resetSelection();
     renderSidebar();
     renderView();
   }
@@ -825,6 +860,7 @@
   function openQueue() {
     state.view = { type: "queue" };
     resetSearch();
+    resetSelection();
     renderSidebar();
     renderView();
   }
@@ -832,6 +868,7 @@
   function openNowPlaying() {
     state.view = { type: "nowplaying" };
     resetSearch();
+    resetSelection();
     renderSidebar();
     renderView();
   }
@@ -861,6 +898,136 @@
     }
   });
 
+  // ---------------- multi-select ----------------
+
+  let displayedTracks = [];   // what the current list view shows, in order
+
+  function selectionActive() {
+    return state.selectionMode || state.selected.size > 0;
+  }
+
+  function selectedTracks() {
+    return displayedTracks.filter((t) => state.selected.has(t.id));
+  }
+
+  // Forget the selection without touching the screen (used when changing page).
+  function resetSelection() {
+    state.selected.clear();
+    state.selectionMode = false;
+    state.selectAnchor = null;
+  }
+
+  function clearSelection() {
+    resetSelection();
+    updateSelectionUi();
+  }
+
+  function toggleSelected(id) {
+    if (state.selected.has(id)) state.selected.delete(id);
+    else state.selected.add(id);
+    state.selectAnchor = id;
+    updateSelectionUi();
+  }
+
+  function selectRangeTo(id) {
+    const ids = displayedTracks.map((t) => t.id);
+    const to = ids.indexOf(id);
+    const from = state.selectAnchor ? ids.indexOf(state.selectAnchor) : -1;
+    if (to === -1) return;
+    if (from === -1) { toggleSelected(id); return; }
+    for (let i = Math.min(from, to); i <= Math.max(from, to); i++) state.selected.add(ids[i]);
+    updateSelectionUi();
+  }
+
+  function updateSelectionUi() {
+    const active = selectionActive();
+    trackListEl.classList.toggle("selecting", active);
+    trackListEl.querySelectorAll(".track-row").forEach((row) => {
+      const on = state.selected.has(row.dataset.id);
+      row.classList.toggle("selected", on);
+      const box = row.querySelector(".track-check");
+      if (box) box.checked = on;
+    });
+
+    const listView = state.view.type === "library" || state.view.type === "playlist";
+    const n = selectedTracks().length;
+    selectToggle.classList.toggle("active", active);
+    selectToggle.textContent = active ? "Done" : "Select";
+    setHidden(selectionBarEl, !(active && listView));
+    selectionCountEl.textContent = n === 0 ? "Select songs" : `${n} selected`;
+    selAllBtn.textContent = n > 0 && n === displayedTracks.length ? "Deselect all" : "Select all";
+    selAllBtn.disabled = displayedTracks.length === 0;
+    [selPlayNextBtn, selQueueBtn, selPlaylistBtn, selRemoveBtn, selDeleteBtn].forEach((b) => { b.disabled = n === 0; });
+    setHidden(selRemoveBtn, state.view.type !== "playlist");
+  }
+
+  function enqueueMany(tracks, atFront) {
+    const entries = tracks.map((track) => ({ qid: ++qidCounter, track }));
+    if (atFront) state.upNext.unshift(...entries);
+    else state.upNext.push(...entries);
+    const n = tracks.length;
+    flash(`${n} song${n === 1 ? "" : "s"} ${atFront ? "will play next" : "added to the queue"}`);
+    onQueueChanged();
+  }
+
+  selectToggle.addEventListener("click", () => {
+    if (selectionActive()) {
+      clearSelection();
+    } else {
+      state.selectionMode = true;
+      updateSelectionUi();
+    }
+  });
+
+  selAllBtn.addEventListener("click", () => {
+    const allSelected = displayedTracks.length > 0 && selectedTracks().length === displayedTracks.length;
+    if (allSelected) state.selected.clear();
+    else displayedTracks.forEach((t) => state.selected.add(t.id));
+    updateSelectionUi();
+  });
+
+  selPlayNextBtn.addEventListener("click", () => {
+    enqueueMany(selectedTracks(), true);
+    clearSelection();
+  });
+
+  selQueueBtn.addEventListener("click", () => {
+    enqueueMany(selectedTracks(), false);
+    clearSelection();
+  });
+
+  selPlaylistBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openAddPopover(selectedTracks(), selPlaylistBtn, clearSelection);
+  });
+
+  selRemoveBtn.addEventListener("click", async () => {
+    const pl = currentPlaylist();
+    const ids = selectedTracks().map((t) => t.id);
+    if (!pl || ids.length === 0) return;
+    try {
+      await api("POST", `/api/playlists/${pl.id}/tracks/batch-remove`, { track_ids: ids });
+      await loadPlaylists();
+      renderSidebar();
+      clearSelection();
+      renderView();
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+  });
+
+  selDeleteBtn.addEventListener("click", async () => {
+    const ids = selectedTracks().map((t) => t.id);
+    if (ids.length === 0) return;
+    if (!confirm(`Delete ${ids.length} song${ids.length === 1 ? "" : "s"} from your library? This deletes the files and can't be undone.`)) return;
+    try {
+      await deleteTracks(ids);
+      clearSelection();
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+  });
+
   // ---------------- add-to-playlist popover ----------------
 
   function closePopover() {
@@ -868,13 +1035,18 @@
     addPopover.innerHTML = "";
   }
 
-  function openAddPopover(track, anchorEl) {
-    if (!addPopover.hasAttribute("hidden") && addPopover.dataset.trackId === track.id) {
+  // `tracks` is the song(s) to add. For a single song a playlist is a toggle
+  // (click again to remove); for several, clicking only ever adds.
+  function openAddPopover(tracks, anchorEl, onDone) {
+    const ids = tracks.map((t) => t.id);
+    const key = ids.join("|");
+    if (!addPopover.hasAttribute("hidden") && addPopover.dataset.key === key) {
       closePopover();
       return;
     }
     addPopover.innerHTML = "";
-    addPopover.dataset.trackId = track.id;
+    addPopover.dataset.key = key;
+    const many = ids.length > 1;
 
     if (state.playlists.length === 0) {
       const empty = document.createElement("div");
@@ -884,7 +1056,7 @@
     } else {
       for (const pl of state.playlists) {
         const item = document.createElement("div");
-        const checked = pl.track_ids.includes(track.id);
+        const checked = ids.every((id) => pl.track_ids.includes(id));
         item.className = "popover-item" + (checked ? " checked" : "");
         const box = document.createElement("span");
         box.className = "popover-check";
@@ -895,15 +1067,19 @@
         item.appendChild(label);
         item.addEventListener("click", async () => {
           try {
-            if (checked) {
-              await api("DELETE", `/api/playlists/${pl.id}/tracks/${encodeURIComponent(track.id)}`);
+            if (checked && many) {
+              // Everything selected is already there - nothing to add.
+            } else if (checked) {
+              await api("POST", `/api/playlists/${pl.id}/tracks/batch-remove`, { track_ids: ids });
             } else {
-              await api("POST", `/api/playlists/${pl.id}/tracks`, { track_id: track.id });
+              await api("POST", `/api/playlists/${pl.id}/tracks`, { track_ids: ids });
+              if (many) flash(`Added ${ids.length} songs to ${pl.name}`);
             }
             await loadPlaylists();
             renderSidebar();
             if (state.view.type === "playlist") renderView();
             closePopover();
+            if (onDone) onDone();
           } catch (err) {
             setStatus(err.message, true);
           }
@@ -1683,11 +1859,12 @@
 
   // ---------------- deleting tracks ----------------
 
-  async function deleteTrack(trackId) {
-    const wasPlaying = !!state.current && state.current.id === trackId;
-    await api("DELETE", `/api/tracks/${encodeURIComponent(trackId)}`);
-    state.upNext = state.upNext.filter((e) => e.track.id !== trackId);
-    decks.forEach((d) => { if (d.track && d.track.id === trackId) d.track = null; });
+  async function deleteTracks(trackIds) {
+    const gone = new Set(trackIds);
+    const wasPlaying = !!state.current && gone.has(state.current.id);
+    await api("POST", "/api/tracks/batch-delete", { track_ids: trackIds });
+    state.upNext = state.upNext.filter((e) => !gone.has(e.track.id));
+    decks.forEach((d) => { if (d.track && gone.has(d.track.id)) d.track = null; });
     if (wasPlaying) {
       stopPlayback();
       if (!state.fromUpNext) state.queueIndex = -1;
@@ -1698,6 +1875,10 @@
     await Promise.all([loadLibrary(), loadPlaylists()]);
     renderSidebar();
     renderView();
+  }
+
+  function deleteTrack(trackId) {
+    return deleteTracks([trackId]);
   }
 
   // ---------------- add music: single track ----------------
@@ -2089,6 +2270,7 @@
   function openSettings() {
     state.view = { type: "settings" };
     resetSearch();
+    resetSelection();
     renderSidebar();
     renderView();
   }

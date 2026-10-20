@@ -84,6 +84,18 @@
         <span>Artist</span>
         <select id="artist-select"></select>
       </label>
+      <button id="select-toggle" class="select-toggle" type="button" title="Select several songs">Select</button>
+    </div>
+
+    <div id="selection-bar" class="selection-bar" hidden>
+      <span id="selection-count" class="selection-count">Select songs</span>
+      <button id="sel-all" class="sel-btn" type="button">Select all</button>
+      <span class="selection-spacer"></span>
+      <button id="sel-play-next" class="sel-btn" type="button">Play next</button>
+      <button id="sel-queue" class="sel-btn" type="button">Add to queue</button>
+      <button id="sel-playlist" class="sel-btn" type="button">Add to playlist</button>
+      <button id="sel-remove" class="sel-btn" type="button" hidden>Remove from playlist</button>
+      <button id="sel-delete" class="sel-btn danger" type="button">Delete</button>
     </div>
 
     <div id="status-line" class="status-line" hidden></div>

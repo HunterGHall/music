@@ -723,28 +723,74 @@ def api_delete_all_tracks():
     return jsonify({"deleted": deleted})
 
 
-@app.delete("/api/tracks/<path:track_id>")
-def api_delete_track(track_id):
+def _safe_track_path(track_id):
+    """The library file for a track id, or None if the id isn't a plain
+    filename inside the library (ids arrive from the client)."""
+    if not isinstance(track_id, str) or not track_id:
+        return None
     path = LIBRARY_DIR / track_id
-    if path.is_file():
-        path.unlink()
-    cover = _cover_path_for(path)
-    if cover.is_file():
-        cover.unlink()
+    try:
+        return path if path.parent.resolve() == LIBRARY_DIR.resolve() else None
+    except OSError:
+        return None
+
+
+def _delete_tracks(track_ids):
+    """Deletes song files (and covers) and scrubs them from playlists, play
+    counts and saved edits. Returns how many files were removed."""
+    deleted = 0
+    ids = set()
+    for track_id in track_ids:
+        path = _safe_track_path(track_id)
+        if path is None:
+            continue
+        ids.add(track_id)
+        if path.is_file():
+            try:
+                path.unlink()
+                deleted += 1
+            except OSError:
+                pass
+        cover = _cover_path_for(path)
+        if cover.is_file():
+            try:
+                cover.unlink()
+            except OSError:
+                pass
+    if not ids:
+        return 0
     with _lock:
         playlists = _load_playlists()
         for pl in playlists:
-            pl["track_ids"] = [t for t in pl["track_ids"] if t != track_id]
+            pl["track_ids"] = [t for t in pl["track_ids"] if t not in ids]
         _save_playlists(playlists)
-    with _lock:
         stats = _load_stats()
-        if track_id in stats:
-            del stats[track_id]
-            _save_stats(stats)
+        if any(t in stats for t in ids):
+            _save_stats({k: v for k, v in stats.items() if k not in ids})
         meta = _load_meta()
-        if meta.pop(track_id, None) is not None:
-            _save_meta(meta)
+        if any(t in meta for t in ids):
+            _save_meta({k: v for k, v in meta.items() if k not in ids})
+    with _loudness_lock:
+        loudness = _load_loudness()
+        if any(t in loudness for t in ids):
+            LOUDNESS_FILE.write_text(
+                json.dumps({k: v for k, v in loudness.items() if k not in ids}, indent=2),
+                encoding="utf-8")
+    return deleted
+
+
+@app.delete("/api/tracks/<path:track_id>")
+def api_delete_track(track_id):
+    _delete_tracks([track_id])
     return "", 204
+
+
+@app.post("/api/tracks/batch-delete")
+def api_delete_tracks():
+    track_ids = (request.get_json(silent=True) or {}).get("track_ids")
+    if not isinstance(track_ids, list) or not track_ids:
+        return jsonify({"error": "track_ids required"}), 400
+    return jsonify({"deleted": _delete_tracks(track_ids)})
 
 
 # ---------------- routes: remembered player state ----------------
@@ -884,16 +930,37 @@ def api_reorder_tracks(pid):
 
 @app.post("/api/playlists/<pid>/tracks")
 def api_add_track(pid):
-    track_id = (request.get_json(silent=True) or {}).get("track_id")
-    if not track_id:
+    """Adds one track ({track_id}) or several ({track_ids}) to a playlist."""
+    body = request.get_json(silent=True) or {}
+    track_ids = body.get("track_ids")
+    if track_ids is None and body.get("track_id"):
+        track_ids = [body["track_id"]]
+    if not isinstance(track_ids, list) or not track_ids:
         return jsonify({"error": "track_id required"}), 400
     with _lock:
         playlists = _load_playlists()
         playlist = _find_playlist(playlists, pid)
         if not playlist:
             return jsonify({"error": "Not found"}), 404
-        if track_id not in playlist["track_ids"]:
-            playlist["track_ids"].append(track_id)
+        for track_id in track_ids:
+            if isinstance(track_id, str) and track_id not in playlist["track_ids"]:
+                playlist["track_ids"].append(track_id)
+        _save_playlists(playlists)
+        return jsonify(playlist)
+
+
+@app.post("/api/playlists/<pid>/tracks/batch-remove")
+def api_remove_tracks(pid):
+    track_ids = (request.get_json(silent=True) or {}).get("track_ids")
+    if not isinstance(track_ids, list) or not track_ids:
+        return jsonify({"error": "track_ids required"}), 400
+    drop = set(track_ids)
+    with _lock:
+        playlists = _load_playlists()
+        playlist = _find_playlist(playlists, pid)
+        if not playlist:
+            return jsonify({"error": "Not found"}), 404
+        playlist["track_ids"] = [t for t in playlist["track_ids"] if t not in drop]
         _save_playlists(playlists)
         return jsonify(playlist)
 
