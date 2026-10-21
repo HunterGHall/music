@@ -141,6 +141,12 @@
   const volume = document.getElementById("volume");
   const muteBtn = document.getElementById("mute-btn");
 
+  const fixNamesBtn = document.getElementById("fix-names-btn");
+  const fixBackdrop = document.getElementById("fixnames-backdrop");
+  const fixStatusEl = document.getElementById("fixnames-status");
+  const fixListEl = document.getElementById("fixnames-list");
+  const fixApplyBtn = document.getElementById("fixnames-apply");
+  const fixCancelBtn = document.getElementById("fixnames-cancel");
   const editBackdrop = document.getElementById("edit-backdrop");
   const editTitleInput = document.getElementById("edit-title");
   const editArtistInput = document.getElementById("edit-artist");
@@ -2413,6 +2419,133 @@
       if (e.key === "Enter") { e.preventDefault(); saveEditTrack(false); }
       if (e.key === "Escape") { e.preventDefault(); closeEditTrack(); }
     });
+  });
+
+  // ---------------- fix old names ----------------
+
+  let fixJob = null;
+  let fixPoll = 0;
+  const fixChecked = new Set();   // ids of suggestions ticked for applying
+
+  const songLabel = (names) => (names.artist ? `${names.artist} — ${names.title}` : names.title);
+
+  function closeFixNames() {
+    clearTimeout(fixPoll);
+    fixJob = null;
+    setHidden(fixBackdrop, true);
+  }
+
+  function renderFixNames() {
+    const job = fixJob;
+    if (!job) return;
+    const found = job.suggestions.length;
+    if (job.status === "running") {
+      fixStatusEl.textContent = `Checking ${job.checked}/${job.total || "…"}${job.current ? " — " + job.current : ""}`;
+    } else if (job.status === "error") {
+      fixStatusEl.textContent = job.error || "The scan failed.";
+    } else if (job.total === 0) {
+      fixStatusEl.textContent = "Nothing to fix — every song's name looks fine.";
+    } else if (found === 0) {
+      fixStatusEl.textContent = `No automatic fixes found. ${job.unresolved} song${job.unresolved === 1 ? "" : "s"} look off but need editing by hand (pencil button on the song).`;
+    } else {
+      const rest = job.unresolved ? ` ${job.unresolved} more can't be fixed automatically.` : "";
+      fixStatusEl.textContent = `Found ${found} song${found === 1 ? "" : "s"} with names that can be improved. Untick any you want to keep.${rest}`;
+    }
+
+    fixListEl.innerHTML = "";
+    for (const item of job.suggestions) {
+      const row = document.createElement("label");
+      row.className = "fix-row";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = fixChecked.has(item.id);
+      box.addEventListener("change", () => {
+        if (box.checked) fixChecked.add(item.id);
+        else fixChecked.delete(item.id);
+        updateFixApply();
+      });
+      const text = document.createElement("div");
+      const oldEl = document.createElement("div");
+      oldEl.className = "fix-old";
+      oldEl.textContent = songLabel(item.current);
+      const newEl = document.createElement("div");
+      newEl.className = "fix-new";
+      newEl.textContent = songLabel(item.suggested);
+      const tag = document.createElement("span");
+      tag.className = "fix-tag" + (item.reason === "source" ? " source" : "");
+      tag.textContent = item.reason === "source" ? "from the original source" : "best guess";
+      newEl.appendChild(tag);
+      text.append(oldEl, newEl);
+      row.append(box, text);
+      fixListEl.appendChild(row);
+    }
+    updateFixApply();
+  }
+
+  function updateFixApply() {
+    const n = fixChecked.size;
+    fixApplyBtn.disabled = n === 0 || !fixJob || fixJob.status === "running";
+    fixApplyBtn.textContent = n > 0 ? `Apply ${n}` : "Apply";
+  }
+
+  async function openFixNames() {
+    fixChecked.clear();
+    fixJob = null;
+    fixListEl.innerHTML = "";
+    fixStatusEl.textContent = "Scanning your library…";
+    updateFixApply();
+    setHidden(fixBackdrop, false);
+    let jobId;
+    try {
+      ({ job_id: jobId } = await api("POST", "/api/fix-names/scan"));
+    } catch (err) {
+      fixStatusEl.textContent = err.message;
+      return;
+    }
+    const tick = async () => {
+      let job;
+      try {
+        job = await api("GET", `/api/fix-names/${jobId}`);
+      } catch (err) {
+        fixStatusEl.textContent = err.message;
+        return;
+      }
+      // Suggestions straight from the source are ticked by default; guesses start unticked.
+      for (const item of job.suggestions) {
+        if (!(fixJob && fixJob.suggestions.some((x) => x.id === item.id)) && item.reason === "source") {
+          fixChecked.add(item.id);
+        }
+      }
+      fixJob = job;
+      renderFixNames();
+      if (job.status === "running") fixPoll = setTimeout(tick, 600);
+    };
+    tick();
+  }
+
+  async function applyFixNames() {
+    if (!fixJob) return;
+    const items = fixJob.suggestions
+      .filter((item) => fixChecked.has(item.id))
+      .map((item) => ({ id: item.id, title: item.suggested.title, artist: item.suggested.artist }));
+    if (items.length === 0) return;
+    try {
+      const { tracks } = await api("POST", "/api/tracks/batch-meta", { items });
+      tracks.forEach(applyTrackUpdate);
+      closeFixNames();
+      renderView();
+      onQueueChanged();
+      flash(`Fixed ${tracks.length} song name${tracks.length === 1 ? "" : "s"}`);
+    } catch (err) {
+      fixStatusEl.textContent = err.message;
+    }
+  }
+
+  fixNamesBtn.addEventListener("click", openFixNames);
+  fixApplyBtn.addEventListener("click", applyFixNames);
+  fixCancelBtn.addEventListener("click", closeFixNames);
+  fixBackdrop.addEventListener("click", (e) => {
+    if (e.target === fixBackdrop) closeFixNames();
   });
 
   // ---------------- remembered player state ----------------

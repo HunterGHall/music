@@ -827,6 +827,143 @@ def api_delete_tracks():
     return jsonify({"deleted": _delete_tracks(track_ids)})
 
 
+# ---------------- fixing old names ----------------
+# Songs saved before real titles were kept can show "AC_DC" instead of "AC/DC"
+# (files can't hold "/"), or have no artist at all. A scan finds them and
+# suggests corrections, which the user reviews before anything changes.
+
+_name_jobs = {}
+
+
+def _words(s):
+    """Letters and digits only - to tell punctuation changes from real ones."""
+    return re.sub(r"[\W_]+", "", s).casefold()
+
+
+def _needs_attention(title, artist):
+    return not artist or "_" in title or "_" in artist or "\u29f8" in title + artist
+
+
+def _guess_clean(text):
+    """Best guess at undoing sanitizing: "A _ B" -> "A / B", "AC_DC" -> "AC/DC"."""
+    s = text.replace("\u29f8", "/")
+    s = re.sub(r"\s_\s", " / ", s)
+    return re.sub(r"(?<=[^\W_])_(?=[^\W_])", "/", s)
+
+
+def _real_names_from_source(key):
+    """(title, artist) re-read from where the song came from, or None."""
+    kind, _, ident = key.partition(":")
+    if kind == "spotify":
+        title, artist, _cover = _fetch_spotify_metadata("https://open.spotify.com/track/" + ident)
+        return (title.strip(), artist.strip()) if title else None
+    if kind == "yt":
+        import yt_dlp
+        opts = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info("https://www.youtube.com/watch?v=" + ident, download=False)
+        title, artist = _youtube_track_fields(info)
+        return (title, artist) if title else None
+    return None
+
+
+def _suggest_name(source_key, title, artist):
+    """(title, artist, reason) for a better name, or None. A suggestion must
+    only differ from the current name by punctuation (or fill in a missing
+    artist) - never replace it with different words."""
+    candidates = []
+    if source_key:
+        try:
+            real = _real_names_from_source(source_key)
+        except Exception:
+            real = None
+        if real:
+            candidates.append((real[0], real[1], "source"))
+    candidates.append((_guess_clean(title), _guess_clean(artist), "guess"))
+    for new_title, new_artist, reason in candidates:
+        if (new_title, new_artist) == (title, artist):
+            continue
+        if _words(new_title) != _words(title):
+            continue
+        if artist and _words(new_artist) != _words(artist):
+            continue
+        return new_title, new_artist, reason
+    return None
+
+
+def _scan_names(job):
+    try:
+        with _lock:
+            by_file = {name: key for key, name in _load_sources().items()}
+        meta = _load_meta()
+        candidates = []
+        for path in find_track_paths():
+            entry = meta.get(path.name)
+            if entry and not entry.get("auto"):
+                continue  # the user already edited this one
+            title, artist = _name_fields(path, meta)
+            if _needs_attention(title, artist):
+                candidates.append((path, title, artist))
+        job["total"] = len(candidates)
+        for path, title, artist in candidates:
+            job["current"] = path.stem
+            suggestion = _suggest_name(by_file.get(path.name), title, artist)
+            if suggestion:
+                job["suggestions"].append({
+                    "id": path.name,
+                    "current": {"title": title, "artist": artist},
+                    "suggested": {"title": suggestion[0], "artist": suggestion[1]},
+                    "reason": suggestion[2],
+                })
+            else:
+                job["unresolved"] += 1
+            job["checked"] += 1
+        job["status"] = "done"
+    except Exception as e:
+        job.update(status="error", error=str(e))
+    job["current"] = None
+
+
+@app.post("/api/fix-names/scan")
+def api_fix_names_scan():
+    job_id = uuid.uuid4().hex
+    job = {"status": "running", "total": 0, "checked": 0, "current": None,
+           "suggestions": [], "unresolved": 0, "error": None}
+    _name_jobs[job_id] = job
+    threading.Thread(target=_scan_names, args=(job,), daemon=True).start()
+    return jsonify({"job_id": job_id}), 202
+
+
+@app.get("/api/fix-names/<job_id>")
+def api_fix_names_status(job_id):
+    job = _name_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(job)
+
+
+@app.post("/api/tracks/batch-meta")
+def api_batch_meta():
+    """Sets title/artist for several tracks at once ({items: [{id, title,
+    artist}]}) - used to apply reviewed name suggestions."""
+    items = (request.get_json(silent=True) or {}).get("items")
+    if not isinstance(items, list) or not items:
+        return jsonify({"error": "items required"}), 400
+    updated = []
+    with _lock:
+        meta = _load_meta()
+        for item in items:
+            path = _safe_track_path(item.get("id") if isinstance(item, dict) else None)
+            title = str(item.get("title", "")).strip()[:200] if isinstance(item, dict) else ""
+            if path is None or not path.is_file() or not title:
+                continue
+            meta[path.name] = {"title": title, "artist": str(item.get("artist", "")).strip()[:200]}
+            updated.append(path)
+        _save_meta(meta)
+    stats, loudness = _load_stats(), _load_loudness()
+    return jsonify({"tracks": [_track_to_dict(p, stats, loudness, meta) for p in updated]})
+
+
 # ---------------- routes: remembered player state ----------------
 
 @app.get("/api/state")

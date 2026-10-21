@@ -222,6 +222,17 @@
       </section>
 
       <section class="settings-card">
+        <h2>Library</h2>
+        <div class="settings-item">
+          <div class="settings-item-text">
+            <label>Fix old names</label>
+            <p>Finds songs whose names lost characters such as "/" (AC/DC saved as AC_DC) or that have no artist, and suggests corrections for you to review.</p>
+          </div>
+          <button id="fix-names-btn" class="btn-secondary" type="button">Scan</button>
+        </div>
+      </section>
+
+      <section class="settings-card">
         <h2>Danger zone</h2>
         <div class="settings-item">
           <div class="settings-item-text">
@@ -376,6 +387,18 @@
       <button id="edit-reset" class="btn-ghost modal-reset" type="button" hidden>Reset to original</button>
       <button id="edit-cancel" class="btn-ghost" type="button">Cancel</button>
       <button id="edit-save" class="btn-primary" type="button">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="fixnames-backdrop" class="modal-backdrop" hidden>
+  <div class="modal modal-fix">
+    <h2>Fix old names</h2>
+    <p id="fixnames-status" class="fix-status"></p>
+    <div id="fixnames-list" class="fix-list"></div>
+    <div class="modal-actions">
+      <button id="fixnames-cancel" class="btn-ghost" type="button">Close</button>
+      <button id="fixnames-apply" class="btn-primary" type="button" disabled>Apply</button>
     </div>
   </div>
 </div>
