@@ -26,6 +26,7 @@ SOURCES_FILE = DATA_DIR / "sources.json"
 LOUDNESS_FILE = DATA_DIR / "loudness.json"
 META_FILE = DATA_DIR / "metadata.json"        # user-edited title/artist per track
 PLAYER_STATE_FILE = DATA_DIR / "player_state.json"
+PLAYLIST_COVERS_DIR = DATA_DIR / "playlist_covers"  # custom playlist covers, <playlist id>.jpg
 LYRICS_DIR = DATA_DIR / "lyrics"              # cached lyrics lookups, one file per track
 LRCLIB_URL = "https://lrclib.net/api/search"  # free, open lyrics database (no key needed)
 TRANSITION_MODES = ("off", "gapless", "crossfade")
@@ -678,6 +679,11 @@ def static_files(filename):
 @app.get("/covers/<path:name>")
 def serve_cover(name):
     return send_from_directory(COVERS_DIR, name)
+
+
+@app.get("/playlist-covers/<path:name>")
+def serve_playlist_cover(name):
+    return send_from_directory(PLAYLIST_COVERS_DIR, name)
 
 
 @app.get("/audio/<path:name>")
@@ -1368,10 +1374,37 @@ def api_update_settings():
 
 # ---------------- routes: playlists ----------------
 
+def _playlist_cover_path(pid):
+    return PLAYLIST_COVERS_DIR / f"{pid}.jpg"
+
+
+def _playlist_public(playlist):
+    """A playlist as the client sees it: with its description and, when it has
+    one, the URL of its custom cover (the version in the URL busts caches)."""
+    out = dict(playlist)
+    out["description"] = playlist.get("description", "")
+    cover = _playlist_cover_path(playlist["id"])
+    out["cover"] = f"/playlist-covers/{cover.name}?v={int(cover.stat().st_mtime)}" if cover.is_file() else None
+    return out
+
+
 @app.get("/api/playlists")
 def api_get_playlists():
     with _lock:
-        return jsonify(_load_playlists())
+        return jsonify([_playlist_public(p) for p in _load_playlists()])
+
+
+@app.put("/api/playlists/order")
+def api_reorder_playlists():
+    """Sets the order of the playlists ({ids: [...]}, a permutation of all ids)."""
+    ids = (request.get_json(silent=True) or {}).get("ids")
+    with _lock:
+        playlists = _load_playlists()
+        if not isinstance(ids, list) or sorted(ids) != sorted(p["id"] for p in playlists):
+            return jsonify({"error": "ids must list every playlist exactly once"}), 400
+        by_id = {p["id"]: p for p in playlists}
+        _save_playlists([by_id[i] for i in ids])
+    return "", 204
 
 
 @app.post("/api/playlists")
@@ -1388,18 +1421,52 @@ def api_create_playlist():
 
 
 @app.patch("/api/playlists/<pid>")
-def api_rename_playlist(pid):
-    name = (request.get_json(silent=True) or {}).get("name", "").strip()
-    if not name:
+def api_update_playlist(pid):
+    """Renames a playlist ({name}) and/or sets its description ({description})."""
+    body = request.get_json(silent=True) or {}
+    if "name" not in body and "description" not in body:
+        return jsonify({"error": "Name required"}), 400
+    name = str(body["name"]).strip()[:120] if "name" in body else None
+    if name is not None and not name:
         return jsonify({"error": "Name required"}), 400
     with _lock:
         playlists = _load_playlists()
         playlist = _find_playlist(playlists, pid)
         if not playlist:
             return jsonify({"error": "Not found"}), 404
-        playlist["name"] = name
+        if name is not None:
+            playlist["name"] = name
+        if "description" in body:
+            playlist["description"] = str(body["description"]).strip()[:500]
         _save_playlists(playlists)
-        return jsonify(playlist)
+        return jsonify(_playlist_public(playlist))
+
+
+@app.post("/api/playlists/<pid>/cover")
+def api_set_playlist_cover(pid):
+    """Sets a custom cover from the request body (a JPEG - the client crops
+    and shrinks whatever the user picked before sending it)."""
+    data = request.get_data()
+    if not data.startswith(b"\xff\xd8\xff"):
+        return jsonify({"error": "A JPEG image is required"}), 400
+    if len(data) > 3_000_000:
+        return jsonify({"error": "Image too large"}), 413
+    with _lock:
+        playlist = _find_playlist(_load_playlists(), pid)
+        if not playlist:
+            return jsonify({"error": "Not found"}), 404
+        PLAYLIST_COVERS_DIR.mkdir(parents=True, exist_ok=True)
+        _playlist_cover_path(pid).write_bytes(data)
+        return jsonify(_playlist_public(playlist))
+
+
+@app.delete("/api/playlists/<pid>/cover")
+def api_remove_playlist_cover(pid):
+    with _lock:
+        if not _find_playlist(_load_playlists(), pid):
+            return jsonify({"error": "Not found"}), 404
+        _playlist_cover_path(pid).unlink(missing_ok=True)
+    return "", 204
 
 
 @app.delete("/api/playlists")
@@ -1407,6 +1474,7 @@ def api_delete_all_playlists():
     """Removes every playlist. Tracks stay in the library."""
     with _lock:
         _save_playlists([])
+    shutil.rmtree(PLAYLIST_COVERS_DIR, ignore_errors=True)
     return "", 204
 
 
@@ -1418,6 +1486,7 @@ def api_delete_playlist(pid):
         if len(remaining) == len(playlists):
             return jsonify({"error": "Not found"}), 404
         _save_playlists(remaining)
+        _playlist_cover_path(pid).unlink(missing_ok=True)
     return "", 204
 
 

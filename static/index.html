@@ -67,6 +67,16 @@
       </div>
     </header>
 
+    <div id="playlist-header" class="playlist-header" hidden>
+      <div id="playlist-header-art" class="playlist-header-art"></div>
+      <div class="playlist-header-info">
+        <div class="playlist-header-kind">Playlist</div>
+        <p id="playlist-header-desc" class="playlist-header-desc"></p>
+        <div id="playlist-header-meta" class="playlist-header-meta"></div>
+        <button id="playlist-edit-btn" class="btn-secondary" type="button">Edit playlist</button>
+      </div>
+    </div>
+
     <div id="list-controls" class="list-controls" hidden>
       <label class="list-control">
         <span>Sort</span>
@@ -438,6 +448,33 @@
     <div class="modal-actions">
       <button id="fixnames-cancel" class="btn-ghost" type="button">Close</button>
       <button id="fixnames-apply" class="btn-primary" type="button" disabled>Apply</button>
+    </div>
+  </div>
+</div>
+
+<div id="plist-edit-backdrop" class="modal-backdrop" hidden>
+  <div class="modal modal-wide">
+    <h2>Edit playlist</h2>
+    <label class="modal-field">Name
+      <input id="plist-edit-name" type="text" maxlength="60" autocomplete="off">
+    </label>
+    <label class="modal-field">Description
+      <textarea id="plist-edit-desc" rows="3" maxlength="500" placeholder="Add a note about this playlist"></textarea>
+    </label>
+    <div class="modal-field">Cover
+      <div class="plist-cover-row">
+        <div id="plist-edit-cover" class="plist-cover-preview"></div>
+        <div class="plist-cover-actions">
+          <button id="plist-cover-choose" class="btn-secondary" type="button">Choose image&hellip;</button>
+          <button id="plist-cover-remove" class="btn-ghost" type="button" hidden>Use song artwork</button>
+          <span id="plist-cover-hint" class="plist-cover-hint"></span>
+        </div>
+      </div>
+      <input id="plist-cover-file" type="file" accept="image/*" hidden>
+    </div>
+    <div class="modal-actions">
+      <button id="plist-edit-cancel" class="btn-ghost" type="button">Cancel</button>
+      <button id="plist-edit-save" class="btn-primary" type="button">Save</button>
     </div>
   </div>
 </div>

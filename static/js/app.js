@@ -141,6 +141,21 @@
   const volume = document.getElementById("volume");
   const muteBtn = document.getElementById("mute-btn");
 
+  const playlistHeaderEl = document.getElementById("playlist-header");
+  const playlistHeaderArt = document.getElementById("playlist-header-art");
+  const playlistHeaderDesc = document.getElementById("playlist-header-desc");
+  const playlistHeaderMeta = document.getElementById("playlist-header-meta");
+  const playlistEditBtn = document.getElementById("playlist-edit-btn");
+  const plEditBackdrop = document.getElementById("plist-edit-backdrop");
+  const plEditName = document.getElementById("plist-edit-name");
+  const plEditDesc = document.getElementById("plist-edit-desc");
+  const plEditCover = document.getElementById("plist-edit-cover");
+  const plCoverChoose = document.getElementById("plist-cover-choose");
+  const plCoverRemove = document.getElementById("plist-cover-remove");
+  const plCoverHint = document.getElementById("plist-cover-hint");
+  const plCoverFile = document.getElementById("plist-cover-file");
+  const plEditCancel = document.getElementById("plist-edit-cancel");
+  const plEditSave = document.getElementById("plist-edit-save");
   const lyricsToggle = document.getElementById("lyrics-toggle");
   const lyricsPanel = document.getElementById("lyrics-panel");
   const lyricsBody = document.getElementById("lyrics-body");
@@ -253,6 +268,8 @@
       const li = document.createElement("li");
       li.className = "playlist-row" + (state.view.type === "playlist" && state.view.id === pl.id ? " active" : "");
       li.dataset.id = pl.id;
+      li.draggable = true;
+      if (pl.description) li.title = pl.description;
 
       const name = document.createElement("span");
       name.className = "pl-name";
@@ -295,6 +312,8 @@
         }
       });
 
+      attachPlaylistRowDnd(li, pl, name);
+
       li.appendChild(name);
       li.appendChild(count);
       li.appendChild(del);
@@ -302,12 +321,109 @@
     }
   }
 
+  // ---- sidebar drag and drop: reorder playlists / drop songs onto a playlist ----
+
+  const TRACKS_MIME = "application/x-music-tracks";
+  const PLAYLIST_MIME = "application/x-music-playlist";
+  let dragPlaylistId = null;
+
+  function clearPlaylistDropIndicators() {
+    playlistListEl.querySelectorAll(".drop-before, .drop-after, .drop-target").forEach((el) => {
+      el.classList.remove("drop-before", "drop-after", "drop-target");
+    });
+  }
+
+  function attachPlaylistRowDnd(li, pl, nameEl) {
+    li.addEventListener("dragstart", (e) => {
+      if (nameEl.isContentEditable) { e.preventDefault(); return; }
+      dragPlaylistId = pl.id;
+      li.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData(PLAYLIST_MIME, pl.id);
+      e.dataTransfer.setData("text/plain", pl.name);
+    });
+
+    li.addEventListener("dragend", () => {
+      dragPlaylistId = null;
+      li.classList.remove("dragging");
+      clearPlaylistDropIndicators();
+    });
+
+    li.addEventListener("dragover", (e) => {
+      const types = Array.from(e.dataTransfer.types);
+      if (types.includes(PLAYLIST_MIME)) {
+        if (dragPlaylistId === null || dragPlaylistId === pl.id) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        clearPlaylistDropIndicators();
+        const rect = li.getBoundingClientRect();
+        li.classList.add(e.clientY > rect.top + rect.height / 2 ? "drop-after" : "drop-before");
+      } else if (types.includes(TRACKS_MIME)) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+        li.classList.add("drop-target");
+      }
+    });
+
+    li.addEventListener("dragleave", (e) => {
+      if (!li.contains(e.relatedTarget)) li.classList.remove("drop-before", "drop-after", "drop-target");
+    });
+
+    li.addEventListener("drop", async (e) => {
+      const types = Array.from(e.dataTransfer.types);
+      if (types.includes(PLAYLIST_MIME)) {
+        e.preventDefault();
+        const movedId = dragPlaylistId;
+        const rect = li.getBoundingClientRect();
+        const after = e.clientY > rect.top + rect.height / 2;
+        clearPlaylistDropIndicators();
+        if (movedId === null || movedId === pl.id) return;
+        const ids = state.playlists.map((p) => p.id).filter((id) => id !== movedId);
+        const at = ids.indexOf(pl.id);
+        ids.splice(after ? at + 1 : at, 0, movedId);
+        const previous = state.playlists;
+        state.playlists = ids.map((id) => previous.find((p) => p.id === id));
+        renderSidebar();
+        if (state.view.type === "dashboard") renderView();
+        try {
+          await api("PUT", "/api/playlists/order", { ids });
+        } catch (err) {
+          state.playlists = previous;
+          renderSidebar();
+          setStatus(err.message, true);
+        }
+      } else if (types.includes(TRACKS_MIME)) {
+        e.preventDefault();
+        clearPlaylistDropIndicators();
+        let ids = [];
+        try { ids = JSON.parse(e.dataTransfer.getData(TRACKS_MIME)); } catch (_) { return; }
+        const fresh = ids.filter((id) => !pl.track_ids.includes(id));
+        if (fresh.length === 0) {
+          flash(`Already in ${pl.name}`);
+          return;
+        }
+        try {
+          await api("POST", `/api/playlists/${pl.id}/tracks`, { track_ids: fresh });
+          await loadPlaylists();
+          renderSidebar();
+          if (state.view.type === "playlist" && state.view.id === pl.id) renderView();
+          flash(`Added ${fresh.length} song${fresh.length === 1 ? "" : "s"} to ${pl.name}`);
+        } catch (err) {
+          setStatus(err.message, true);
+        }
+      }
+    });
+  }
+
   function startRenamePlaylist(pl, nameEl) {
+    const row = nameEl.closest("li");
+    if (row) row.draggable = false;
     nameEl.contentEditable = "true";
     nameEl.focus();
     document.execCommand("selectAll", false, null);
 
     const finish = async (commit) => {
+      if (row) row.draggable = true;
       nameEl.contentEditable = "false";
       nameEl.removeEventListener("blur", onBlur);
       nameEl.removeEventListener("keydown", onKeydown);
@@ -436,6 +552,7 @@
   });
 
   function hideAllPages() {
+    setHidden(playlistHeaderEl, true);
     setHidden(listControlsEl, true);
     setHidden(selectionBarEl, true);
     setHidden(searchBox, true);
@@ -489,6 +606,7 @@
     setHidden(searchBox, false);
     setHidden(listControlsEl, false);
     setHidden(trackListEl, false);
+    renderPlaylistHeader();
 
     viewTitle.textContent = state.view.type === "playlist"
       ? (currentPlaylist() ? currentPlaylist().name : "Playlist")
@@ -652,7 +770,7 @@
       if (selectionActive()) playQueueAt(index);
     });
 
-    if (reorderEnabled) attachDragHandlers(row, track);
+    attachDragHandlers(row, track);
 
     return row;
   }
@@ -673,21 +791,48 @@
     return e.clientY > rect.top + rect.height / 2;
   }
 
+  // The songs a drag starting on `track` carries: the whole selection if the
+  // row is part of it, otherwise just that song.
+  function dragIdsFor(track) {
+    return selectionActive() && state.selected.has(track.id)
+      ? selectedTracks().map((t) => t.id)
+      : [track.id];
+  }
+
+  function setDragLabel(e, text) {
+    const ghost = document.createElement("div");
+    ghost.className = "drag-ghost";
+    ghost.textContent = text;
+    document.body.appendChild(ghost);
+    e.dataTransfer.setDragImage(ghost, 14, 14);
+    setTimeout(() => ghost.remove(), 0);
+  }
+
+  // Rows are dragged onto a sidebar playlist to add the song(s) to it; in a
+  // playlist shown in its own order they can also be dragged to reorder.
   function attachDragHandlers(row, track) {
     row.draggable = true;
 
     row.addEventListener("dragstart", (e) => {
-      dragTrackId = track.id;
+      const ids = dragIdsFor(track);
+      dragTrackId = reorderEnabled && ids.length === 1 ? track.id : null;
       row.classList.add("dragging");
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", track.id);
+      document.body.classList.add("dragging-songs");
+      e.dataTransfer.effectAllowed = "copyMove";
+      e.dataTransfer.setData(TRACKS_MIME, JSON.stringify(ids));
+      e.dataTransfer.setData("text/plain", ids.join("\n"));
+      setDragLabel(e, ids.length > 1 ? `${ids.length} songs` : track.title);
     });
 
     row.addEventListener("dragend", () => {
       dragTrackId = null;
       row.classList.remove("dragging");
+      document.body.classList.remove("dragging-songs");
       clearDropIndicators();
+      clearPlaylistDropIndicators();
     });
+
+    if (!reorderEnabled) return;
 
     row.addEventListener("dragover", (e) => {
       if (dragTrackId === null || dragTrackId === track.id) return;
@@ -775,7 +920,8 @@
   function buildPlaylistTile(playlist) {
     const tile = document.createElement("div");
     tile.className = "tile";
-    tile.appendChild(buildTileArt(playlistTileCovers(playlist)));
+    tile.appendChild(buildTileArt(playlist.cover ? [playlist.cover] : playlistTileCovers(playlist)));
+    if (playlist.description) tile.title = playlist.description;
 
     const name = document.createElement("div");
     name.className = "tile-name";
@@ -836,6 +982,150 @@
     setHidden(mostPlayedEmpty, top.length > 0);
     top.forEach((track, index) => mostPlayedGrid.appendChild(buildMostPlayedTile(track, index, top)));
   }
+
+  // ---------------- playlist header + editing ----------------
+
+  function formatTotalLength(seconds) {
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${Math.max(1, minutes)} min`;
+    return `${Math.floor(minutes / 60)} hr ${minutes % 60} min`;
+  }
+
+  function renderPlaylistHeader() {
+    const pl = state.view.type === "playlist" ? currentPlaylist() : null;
+    setHidden(playlistHeaderEl, !pl);
+    if (!pl) return;
+
+    playlistHeaderArt.innerHTML = "";
+    playlistHeaderArt.appendChild(buildTileArt(pl.cover ? [pl.cover] : playlistTileCovers(pl)));
+
+    playlistHeaderDesc.textContent = pl.description || "Add a description";
+    playlistHeaderDesc.classList.toggle("empty", !pl.description);
+
+    const songs = pl.track_ids.map(trackById).filter(Boolean);
+    const total = songs.reduce((sum, t) => sum + (t.duration || 0), 0);
+    playlistHeaderMeta.textContent = songs.length === 0
+      ? "No songs yet"
+      : `${songs.length} song${songs.length === 1 ? "" : "s"} · ${formatTotalLength(total)}`;
+  }
+
+  let editingPlaylist = null;
+  let pendingCover = null;   // {blob, url} chosen but not saved, "remove", or null (unchanged)
+
+  function renderPlaylistEditCover() {
+    const pl = editingPlaylist;
+    if (!pl) return;
+    const picked = pendingCover && pendingCover !== "remove";
+    const showCustom = picked || (!pendingCover && pl.cover);
+    plEditCover.innerHTML = "";
+    plEditCover.appendChild(buildTileArt(showCustom ? [picked ? pendingCover.url : pl.cover] : playlistTileCovers(pl)));
+    setHidden(plCoverRemove, !showCustom);
+    plCoverRemove.textContent = picked ? "Discard chosen image" : "Use song artwork";
+    plCoverHint.textContent = showCustom ? "Custom cover." : "Made from the songs' artwork.";
+  }
+
+  function openPlaylistEdit(pl) {
+    editingPlaylist = pl;
+    pendingCover = null;
+    plEditName.value = pl.name;
+    plEditDesc.value = pl.description || "";
+    plCoverFile.value = "";
+    renderPlaylistEditCover();
+    setHidden(plEditBackdrop, false);
+    plEditName.focus();
+    plEditName.select();
+  }
+
+  function closePlaylistEdit() {
+    if (pendingCover && pendingCover !== "remove") URL.revokeObjectURL(pendingCover.url);
+    pendingCover = null;
+    editingPlaylist = null;
+    setHidden(plEditBackdrop, true);
+  }
+
+  // Crops to a centred square and shrinks to 512px, so covers stay small.
+  async function squareJpeg(file, size = 512) {
+    const bitmap = await createImageBitmap(file);
+    const side = Math.min(bitmap.width, bitmap.height);
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    canvas.getContext("2d").drawImage(
+      bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, size, size);
+    bitmap.close();
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Couldn't read that image"))), "image/jpeg", 0.88);
+    });
+  }
+
+  plCoverChoose.addEventListener("click", () => plCoverFile.click());
+  plCoverFile.addEventListener("change", async () => {
+    const file = plCoverFile.files[0];
+    plCoverFile.value = "";
+    if (!file) return;
+    try {
+      const blob = await squareJpeg(file);
+      if (pendingCover && pendingCover !== "remove") URL.revokeObjectURL(pendingCover.url);
+      pendingCover = { blob, url: URL.createObjectURL(blob) };
+      renderPlaylistEditCover();
+    } catch (err) {
+      setStatus(err.message || "Couldn't read that image", true);
+    }
+  });
+  plCoverRemove.addEventListener("click", () => {
+    if (pendingCover && pendingCover !== "remove") {
+      URL.revokeObjectURL(pendingCover.url);
+      pendingCover = null;
+    } else {
+      pendingCover = "remove";
+    }
+    renderPlaylistEditCover();
+  });
+
+  async function savePlaylistEdit() {
+    const pl = editingPlaylist;
+    if (!pl) return;
+    const name = plEditName.value.trim();
+    if (!name) { plEditName.focus(); return; }
+    try {
+      await api("PATCH", `/api/playlists/${pl.id}`, { name, description: plEditDesc.value.trim() });
+      if (pendingCover && pendingCover !== "remove") {
+        const res = await fetch(`/api/playlists/${pl.id}/cover`, {
+          method: "POST", headers: { "Content-Type": "image/jpeg" }, body: pendingCover.blob,
+        });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Couldn't save the cover");
+      } else if (pendingCover === "remove") {
+        await api("DELETE", `/api/playlists/${pl.id}/cover`);
+      }
+      closePlaylistEdit();
+      await loadPlaylists();
+      renderSidebar();
+      renderView();
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+  }
+
+  playlistEditBtn.addEventListener("click", () => {
+    const pl = currentPlaylist();
+    if (pl) openPlaylistEdit(pl);
+  });
+  playlistHeaderDesc.addEventListener("click", () => {
+    const pl = currentPlaylist();
+    if (pl && !pl.description) openPlaylistEdit(pl);
+  });
+  plEditSave.addEventListener("click", savePlaylistEdit);
+  plEditCancel.addEventListener("click", closePlaylistEdit);
+  plEditBackdrop.addEventListener("click", (e) => {
+    if (e.target === plEditBackdrop) closePlaylistEdit();
+  });
+  plEditName.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); savePlaylistEdit(); }
+    if (e.key === "Escape") { e.preventDefault(); closePlaylistEdit(); }
+  });
+  plEditDesc.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); closePlaylistEdit(); }
+  });
 
   // ---------------- navigation ----------------
 
