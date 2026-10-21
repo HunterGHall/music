@@ -102,13 +102,14 @@ def _save_meta(meta):
     META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
 
-def _track_fields(path, meta=None):
-    """(title, artist, duration) - by default the artist comes from an
-    "Artist - Title.ext" filename, the convention downloads are saved under
-    below; a title/artist the user edited in-app takes precedence. (Edits are
-    stored beside the file rather than renaming it, so everything that refers
-    to the track by filename - playlists, play counts - keeps working.)"""
-    name = path.stem
+def _name_fields(path, meta=None):
+    """(title, artist) - by default the artist comes from an "Artist -
+    Title.ext" filename, the convention downloads are saved under below; a
+    title/artist stored in the metadata file (edited in-app, or the real names
+    kept at import) takes precedence. (Those are stored beside the file rather
+    than renaming it, so everything that refers to the track by filename -
+    playlists, play counts - keeps working.)"""
+    name = path.stem.replace("⧸", "/")  # yt-dlp's lookalike for "/" in titles
     if " - " in name:
         artist, title = name.split(" - ", 1)
     else:
@@ -117,7 +118,37 @@ def _track_fields(path, meta=None):
     if override:
         title = override.get("title", title)
         artist = override.get("artist", artist)
+    return title, artist
+
+
+def _track_fields(path, meta=None):
+    """(title, artist, duration)."""
+    title, artist = _name_fields(path, meta)
     return title, artist, _track_duration(path)
+
+
+def _remember_real_names(final, title, artist):
+    """Filenames can't hold / \\ : * ? " < > | so they're swapped for "_" on
+    disk, which would show "AC/DC" as "AC_DC". When the real title/artist
+    differ from what the filename gives back, keep them in the metadata file
+    (flagged "auto" so the song doesn't count as user-edited)."""
+    title = (title or "").strip()
+    artist = (artist or "").strip()
+    if not title:
+        return
+    on_disk = _name_fields(final, {})
+    if (title, artist) == on_disk:
+        return
+    # Only act when the names differ in punctuation (what sanitizing swaps
+    # out), never when the filename genuinely carries different words.
+    def words(s):
+        return re.sub(r"[\W_]+", "", s).casefold()
+    if words(title) != words(on_disk[0]) or words(artist) != words(on_disk[1]):
+        return
+    with _lock:
+        meta = _load_meta()
+        meta[final.name] = {"title": title, "artist": artist, "auto": True}
+        _save_meta(meta)
 
 
 def _cover_path_for(audio_path):
@@ -129,13 +160,13 @@ def _track_to_dict(path, stats=None, loudness=None, meta=None):
     title, artist, duration = _track_fields(path, meta)
     cover = _cover_path_for(path)
     return {
-        "edited": path.name in meta,
+        "edited": path.name in meta and not meta[path.name].get("auto"),
         "gain_db": _cached_gain_db(path, loudness),
         "id": path.name,
         "title": title,
         "artist": artist,
         "duration": duration,
-        "cover": f"/covers/{cover.name}" if cover.is_file() else None,
+        "cover": f"/covers/{urllib.parse.quote(cover.name)}" if cover.is_file() else None,
         "plays": (stats or {}).get(path.name, 0),
         "added": path.stat().st_mtime,
     }
@@ -527,6 +558,7 @@ def _download_youtube(url, hook):
     path = _final_path(ydl, info)
     title, artist = _youtube_track_fields(info)
     final, display_name = _rename_with_artist(path, title or path.stem, artist)
+    _remember_real_names(final, title or path.stem, artist)
     thumb = info.get("thumbnail")
     if thumb:
         _download_image(thumb, _cover_path_for(final))
@@ -552,6 +584,7 @@ def _download_youtube_playlist(url, progress_hook, on_track, on_existing):
                 return  # a stale duplicate event for a track already handled below
             title, artist = _youtube_track_fields(info)
             final, display_name = _rename_with_artist(path, title or path.stem, artist)
+            _remember_real_names(final, title or path.stem, artist)
             thumb = info.get("thumbnail")
             if thumb:
                 _download_image(thumb, _cover_path_for(final))
@@ -613,6 +646,7 @@ def _download_spotify(url, hook):
         if final.exists():
             final.unlink()
         downloaded.rename(final)
+    _remember_real_names(final, title, artist)
 
     if cover_url:
         _download_image(cover_url, _cover_path_for(final))

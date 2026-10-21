@@ -1842,6 +1842,23 @@
     scheduleSaveState();
   });
 
+  // Scroll over the volume control to change it: one mouse-wheel notch
+  // (deltaY 100) is 5%, and smooth trackpad scrolling adds up fractionally.
+  const volumeArea = volume.parentElement;
+  let volumeWheelAcc = 0;
+  volumeArea.title = "Scroll to change volume";
+  volumeArea.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    volumeWheelAcc += -e.deltaY / 20;
+    const whole = Math.trunc(volumeWheelAcc);
+    if (whole === 0) return;
+    volumeWheelAcc -= whole;
+    const next = Math.max(0, Math.min(100, Number(volume.value) + whole));
+    if (next === Number(volume.value)) return;
+    volume.value = next;
+    volume.dispatchEvent(new Event("input"));
+  }, { passive: false });
+
   let lastVolume = 70;
   muteBtn.addEventListener("click", () => {
     if (audio.muted || audio.volume === 0) {
