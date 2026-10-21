@@ -161,6 +161,10 @@
   const lyricsBody = document.getElementById("lyrics-body");
   const lyricsSourceEl = document.getElementById("lyrics-source");
   const lyricsRetryBtn = document.getElementById("lyrics-retry");
+  const lyricsSyncEl = document.getElementById("lyrics-sync");
+  const lyricsEarlierBtn = document.getElementById("lyrics-earlier");
+  const lyricsLaterBtn = document.getElementById("lyrics-later");
+  const lyricsOffsetBtn = document.getElementById("lyrics-offset");
   const lyricsSetting = document.getElementById("lyrics-setting");
   const findDupesBtn = document.getElementById("find-dupes-btn");
   const dupesBackdrop = document.getElementById("dupes-backdrop");
@@ -2114,6 +2118,11 @@
     el.addEventListener("seeked", () => {
       if (el === audio) updateLyricsLine();
     });
+    el.addEventListener("timeupdate", () => {
+      // Backstop for the animation-frame loop (which browsers pause for hidden
+      // or covered windows): the highlight can lag a moment but never freeze.
+      if (el === audio && lyricsVisible()) updateLyricsLine();
+    });
     el.addEventListener("pause", () => {
       if (el !== audio) return;
       setHidden(playIcon, false);
@@ -2754,7 +2763,9 @@
     data: null,         // the server's result for that track
     lines: [],          // the rendered synced-line elements
     active: -1,         // index of the highlighted line
+    offset: 0,          // seconds added to every line's time (the per-song timing nudge)
     userScrollUntil: 0, // don't auto-scroll until this time (the user scrolled)
+    lastAutoScroll: 0,  // when we last scrolled the panel ourselves
   };
   const lyricsCache = new Map();   // track id -> result, for this session
   let lyricsRaf = 0;
@@ -2780,6 +2791,8 @@
     lyrics.lines = [];
     lyrics.active = -1;
     lyricsSourceEl.textContent = "";
+    lyricsSourceEl.title = "";
+    setHidden(lyricsSyncEl, true);
     setHidden(lyricsRetryBtn, !canRetry);
   }
 
@@ -2796,6 +2809,7 @@
     lyricsBody.innerHTML = "";
     lyrics.lines = [];
     lyrics.active = -1;
+    lyrics.offset = Number(data.offset) || 0;
     if (data.synced && data.synced.length) {
       data.synced.forEach((line, i) => {
         const el = document.createElement("div");
@@ -2805,7 +2819,7 @@
         el.addEventListener("click", () => {
           if (!line.text) return;
           finalizeTransition();
-          audio.currentTime = line.t;
+          audio.currentTime = Math.max(0, line.t + lyrics.offset);
           updateLyricsLine(true);
         });
         lyricsBody.appendChild(el);
@@ -2820,14 +2834,51 @@
       lyricsBody.appendChild(plain);
       lyricsBody.scrollTop = 0;
     }
-    lyricsSourceEl.textContent = "Lyrics from LRCLIB" + (data.synced && data.synced.length ? " · synced" : "");
+    const timed = !!(data.synced && data.synced.length);
+    let note = "Lyrics from LRCLIB" + (timed ? " · synced" : "");
+    lyricsSourceEl.title = "";
+    if (data.timing === "text") {
+      note += " · text only (the timing is from a different edit of this song)";
+    } else if (timed && data.timing === "approximate") {
+      const diff = Math.abs(data.duration_diff || 0).toFixed(1);
+      note += " · timing may be off — these lyrics are timed for a version " + diff + "s " + ((data.duration_diff || 0) > 0 ? "shorter" : "longer") + " than this file; use the buttons to nudge them";
+    }
+    lyricsSourceEl.textContent = note;
+    setHidden(lyricsSyncEl, !timed);
+    updateLyricsOffsetLabel();
     setHidden(lyricsRetryBtn, false);
   }
+
+  function updateLyricsOffsetLabel() {
+    const o = lyrics.offset || 0;
+    lyricsOffsetBtn.textContent = (o > 0 ? "+" : "") + o.toFixed(1) + "s";
+    lyricsOffsetBtn.classList.toggle("changed", Math.abs(o) > 0.001);
+  }
+
+  let lyricsOffsetSaveTimer = 0;
+
+  // Moves all timed lines earlier/later for the current song and remembers it.
+  function setLyricsOffset(value) {
+    const track = state.current;
+    if (!track || !lyrics.data || lyrics.data.status !== "found") return;
+    lyrics.offset = Math.max(-30, Math.min(30, Math.round(value * 100) / 100));
+    lyrics.data.offset = lyrics.offset;       // the cached result is this same object
+    updateLyricsOffsetLabel();
+    updateLyricsLine(true);
+    clearTimeout(lyricsOffsetSaveTimer);
+    lyricsOffsetSaveTimer = setTimeout(() => {
+      api("POST", `/api/tracks/${encodeURIComponent(track.id)}/lyrics/offset`, { offset: lyrics.offset }).catch(() => {});
+    }, 400);
+  }
+
+  lyricsEarlierBtn.addEventListener("click", (e) => setLyricsOffset(lyrics.offset - (e.shiftKey ? 0.1 : 0.5)));
+  lyricsLaterBtn.addEventListener("click", (e) => setLyricsOffset(lyrics.offset + (e.shiftKey ? 0.1 : 0.5)));
+  lyricsOffsetBtn.addEventListener("click", () => setLyricsOffset(0));
 
   async function loadLyricsFor(track, force) {
     lyrics.loadedFor = track.id;
     const cached = force ? null : lyricsCache.get(track.id);
-    if (cached) { renderLyrics(cached); return; }
+    if (cached) { renderLyrics(cached); startLyricsSync(); return; }
     renderLyrics({ status: "loading" });
     let result;
     try {
@@ -2856,19 +2907,29 @@
   function updateLyricsLine(forceScroll) {
     const data = lyrics.data;
     if (!data || data.status !== "found" || !data.synced || !data.synced.length || lyrics.lines.length === 0) return;
-    const now = audio.currentTime + 0.15;
+    const now = audio.currentTime + 0.15 - lyrics.offset;
     let lo = 0, hi = data.synced.length - 1, idx = -1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
       if (data.synced[mid].t <= now) { idx = mid; lo = mid + 1; } else hi = mid - 1;
     }
-    if (idx === lyrics.active && !forceScroll) return;
-    if (lyrics.lines[lyrics.active]) lyrics.lines[lyrics.active].classList.remove("active");
-    lyrics.active = idx;
+    const changed = idx !== lyrics.active;
+    if (changed) {
+      if (lyrics.lines[lyrics.active]) lyrics.lines[lyrics.active].classList.remove("active");
+      lyrics.active = idx;
+      if (lyrics.lines[idx]) lyrics.lines[idx].classList.add("active");
+    }
     const el = lyrics.lines[idx];
     if (!el) return;
-    el.classList.add("active");
-    if (forceScroll || performance.now() > lyrics.userScrollUntil) {
+
+    // Keep the line centred - on every change, and also if it drifted out of
+    // place (e.g. the follow was paused by the user scrolling and has resumed).
+    const nowMs = performance.now();
+    const unlocked = nowMs > lyrics.userScrollUntil;
+    const offCenter = Math.abs(el.offsetTop + el.clientHeight / 2 - lyricsBody.scrollTop - lyricsBody.clientHeight / 2);
+    const drifted = unlocked && offCenter > lyricsBody.clientHeight * 0.3 && nowMs - lyrics.lastAutoScroll > 700;
+    if (forceScroll || (unlocked && changed) || drifted) {
+      lyrics.lastAutoScroll = nowMs;
       lyricsBody.scrollTo({
         top: el.offsetTop - lyricsBody.clientHeight / 2 + el.clientHeight / 2,
         behavior: forceScroll ? "auto" : "smooth",
@@ -2902,7 +2963,7 @@
   });
 
   // Manual scrolling pauses the auto-follow for a few seconds.
-  ["wheel", "touchstart", "pointerdown"].forEach((evt) => {
+  ["wheel", "touchstart"].forEach((evt) => {
     lyricsBody.addEventListener(evt, () => { lyrics.userScrollUntil = performance.now() + 4000; }, { passive: true });
   });
 

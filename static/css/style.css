@@ -838,6 +838,32 @@ body.dragging-songs .playlist-row { outline: 1px dashed rgba(var(--accent-rgb), 
   color: var(--text-faint);
 }
 
+.lyrics-foot { flex-wrap: wrap; gap: 4px 10px; }
+.lyrics-source { flex: 1 1 100%; }
+
+.lyrics-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: auto;
+}
+
+.lyrics-sync button {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1;
+  min-width: 26px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 6px;
+}
+
+.lyrics-sync button:hover { color: var(--text); background: var(--bg-hover); }
+.lyrics-sync #lyrics-offset { min-width: 52px; font-variant-numeric: tabular-nums; }
+.lyrics-sync #lyrics-offset.changed { color: var(--accent); border-color: rgba(var(--accent-rgb), 0.45); }
+
 .lyrics-retry {
   background: none;
   border: none;

@@ -893,9 +893,17 @@ def _lrclib_search(params):
         return json.loads(resp.read().decode("utf-8"))
 
 
+# How far a database entry's length may differ from the file before its timing
+# stops being trusted (timed lyrics from another edit drift out of sync):
+LYRICS_EXACT_SECONDS = 2.0        # trusted as is
+LYRICS_APPROX_SECONDS = 6.0       # timed, but flagged - the user can nudge the timing
+LYRICS_TEXT_ONLY_SECONDS = 12.0   # same song, other edit: keep the words, drop the timing
+
+
 def _pick_lyrics(results, titles, artists, duration):
-    """The best database entry for the song: same title and artist, nearly the
-    same length (to avoid live/remix versions), preferring timed lyrics."""
+    """The best database entry for the song as (entry, length difference, tier):
+    same title and artist and a similar length (to avoid live/remix versions),
+    preferring timed lyrics. tier is "exact", "approximate" or "text"."""
     title_words = {_words(t) for t in titles}
     artist_words = {_words(a) for a in artists if a}
     usable = [r for r in results
@@ -903,10 +911,14 @@ def _pick_lyrics(results, titles, artists, duration):
               and _words(r.get("trackName") or "") in title_words
               and (not artist_words or any(w and (w in _words(r.get("artistName") or "") or _words(r.get("artistName") or "") in w)
                                            for w in artist_words))]
-    for tolerance in (4, 12):
-        pool = [r for r in usable if not duration or abs((r.get("duration") or 0) - duration) <= tolerance]
+    if not duration:
+        return (min(usable, key=lambda r: not r.get("syncedLyrics")), None, "exact") if usable else None
+    tiers = ((LYRICS_EXACT_SECONDS, "exact"), (LYRICS_APPROX_SECONDS, "approximate"), (LYRICS_TEXT_ONLY_SECONDS, "text"))
+    for tolerance, tier in tiers:
+        pool = [r for r in usable if abs((r.get("duration") or 0) - duration) <= tolerance]
         if pool:
-            return min(pool, key=lambda r: (not r.get("syncedLyrics"), abs((r.get("duration") or 0) - duration)))
+            best = min(pool, key=lambda r: (not r.get("syncedLyrics"), abs((r.get("duration") or 0) - duration)))
+            return best, round(duration - (best.get("duration") or 0), 1), tier
     return None
 
 
@@ -920,24 +932,39 @@ def _fetch_lyrics(title, artist, duration):
     for t, a in ((title, artist), (clean, artist), (clean, first)):
         if (t, a) not in attempts:
             attempts.append((t, a))
-    picked = None
+    rank = {"exact": 0, "approximate": 1, "text": 2}
+    best = None
+    searches = []
     for t, a in attempts:
         params = {"track_name": t}
         if a:
             params["artist_name"] = a
-        picked = _pick_lyrics(_lrclib_search(params), titles, artists, duration)
-        if picked:
+        searches.append(params)
+    searches.append({"q": f"{first} {clean}".strip()})
+    for params in searches:
+        candidate = _pick_lyrics(_lrclib_search(params), titles, artists, duration)
+        # keep the closest-length match across the different searches
+        if candidate and (best is None or (rank[candidate[2]], abs(candidate[1] or 0)) < (rank[best[2]], abs(best[1] or 0))):
+            best = candidate
+        if best and best[2] == "exact":
             break
-    if not picked:
-        picked = _pick_lyrics(_lrclib_search({"q": f"{first} {clean}".strip()}), titles, artists, duration)
-    if not picked:
+    if not best:
         return {"status": "none"}
+    picked, diff, tier = best
     if picked.get("instrumental") and not picked.get("plainLyrics") and not picked.get("syncedLyrics"):
         return {"status": "instrumental"}
+
+    timed = _parse_lrc(picked["syncedLyrics"]) if picked.get("syncedLyrics") else None
+    plain = picked.get("plainLyrics")
+    if not plain and timed:
+        plain = "\n".join(line["text"] for line in timed)
     return {
         "status": "found",
-        "synced": _parse_lrc(picked["syncedLyrics"]) if picked.get("syncedLyrics") else None,
-        "plain": picked.get("plainLyrics"),
+        # a different edit of the song has different timing, so only the words are kept
+        "synced": timed if tier != "text" else None,
+        "plain": plain,
+        "timing": tier,
+        "duration_diff": diff,   # file length minus the database entry's length, in seconds
         "match": {"title": picked.get("trackName"), "artist": picked.get("artistName"),
                   "duration": picked.get("duration")},
     }
@@ -956,17 +983,45 @@ def _lyrics_for(path, refresh=False):
             cached = json.loads(cache_file.read_text(encoding="utf-8"))
             result = cached["result"]
             expired = result["status"] == "none" and time.time() - cached["fetched"] > LYRICS_MISS_RETRY_SECONDS
-            if cached["query"] == query and not expired:
-                return result
+            # Entries saved before lengths were checked strictly: look them up
+            # again if the cached version's length is clearly not this file's.
+            matched = (result.get("match") or {}).get("duration")
+            unchecked = (result["status"] == "found" and "timing" not in result and matched
+                         and abs(_track_duration(path) - matched) > LYRICS_EXACT_SECONDS)
+            if cached["query"] == query and not expired and not unchecked:
+                return {**result, "offset": cached.get("offset", 0)}
         except Exception:
             pass  # unreadable cache - just look it up again
 
     result = _fetch_lyrics(title, artist, _track_duration(path))
     with _lock:
         LYRICS_DIR.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps({"query": query, "fetched": time.time(), "result": result}),
+        # a fresh lookup may be a different edit, so any saved timing nudge starts over
+        cache_file.write_text(json.dumps({"query": query, "fetched": time.time(), "offset": 0, "result": result}),
                               encoding="utf-8")
-    return result
+    return {**result, "offset": 0}
+
+
+@app.post("/api/tracks/<path:track_id>/lyrics/offset")
+def api_lyrics_offset(track_id):
+    """Saves a per-song timing nudge ({offset}: seconds added to every timed
+    line) for lyrics from a slightly different edit of the song."""
+    path = _safe_track_path(track_id)
+    if path is None or not path.is_file():
+        abort(404)
+    try:
+        offset = round(max(-30.0, min(30.0, float((request.get_json(silent=True) or {}).get("offset")))), 2)
+    except (TypeError, ValueError):
+        return jsonify({"error": "offset required"}), 400
+    cache_file = _lyrics_cache_path(track_id)
+    with _lock:
+        try:
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
+        except Exception:
+            return jsonify({"error": "No lyrics saved for this song"}), 404
+        cached["offset"] = offset
+        cache_file.write_text(json.dumps(cached), encoding="utf-8")
+    return jsonify({"offset": offset})
 
 
 @app.get("/api/tracks/<path:track_id>/lyrics")
