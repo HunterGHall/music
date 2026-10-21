@@ -937,18 +937,13 @@ def _fetch_lyrics(title, artist, duration):
     }
 
 
-@app.get("/api/tracks/<path:track_id>/lyrics")
-def api_track_lyrics(track_id):
-    path = _safe_track_path(track_id)
-    if path is None or not path.is_file():
-        abort(404)
-    if not _load_settings().get("lyrics_enabled", True):
-        return jsonify({"status": "disabled"})
-
+def _lyrics_for(path, refresh=False):
+    """The lyrics result for a song: from the cache when it's still good,
+    otherwise looked up (and cached). Raises on network errors, which are
+    never cached."""
     title, artist = _name_fields(path)
     query = {"title": title, "artist": artist}
-    cache_file = _lyrics_cache_path(track_id)
-    refresh = request.args.get("refresh") == "1"
+    cache_file = _lyrics_cache_path(path.name)
 
     if cache_file.is_file() and not refresh:
         try:
@@ -956,21 +951,218 @@ def api_track_lyrics(track_id):
             result = cached["result"]
             expired = result["status"] == "none" and time.time() - cached["fetched"] > LYRICS_MISS_RETRY_SECONDS
             if cached["query"] == query and not expired:
-                return jsonify(result)
+                return result
         except Exception:
             pass  # unreadable cache - just look it up again
 
-    try:
-        result = _fetch_lyrics(title, artist, _track_duration(path))
-    except (urllib.error.URLError, OSError, ValueError):
-        # Offline or the service is down: report it, but don't cache the failure.
-        return jsonify({"status": "error", "message": "Couldn't reach the lyrics service."})
-
+    result = _fetch_lyrics(title, artist, _track_duration(path))
     with _lock:
         LYRICS_DIR.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(json.dumps({"query": query, "fetched": time.time(), "result": result}),
                               encoding="utf-8")
-    return jsonify(result)
+    return result
+
+
+@app.get("/api/tracks/<path:track_id>/lyrics")
+def api_track_lyrics(track_id):
+    path = _safe_track_path(track_id)
+    if path is None or not path.is_file():
+        abort(404)
+    if not _load_settings().get("lyrics_enabled", True):
+        return jsonify({"status": "disabled"})
+    try:
+        return jsonify(_lyrics_for(path, refresh=request.args.get("refresh") == "1"))
+    except (urllib.error.URLError, OSError, ValueError):
+        # Offline or the service is down: report it, but don't cache the failure.
+        return jsonify({"status": "error", "message": "Couldn't reach the lyrics service."})
+
+
+def _prefetch_lyrics_async(track_ids):
+    """After an import, looks the new songs' lyrics up in the background so
+    they're ready (and work offline) by the first play."""
+    ids = list(dict.fromkeys(t for t in track_ids if t))
+    if not ids or not _load_settings().get("lyrics_enabled", True):
+        return
+
+    def run():
+        for track_id in ids:
+            path = _safe_track_path(track_id)
+            if path is None or not path.is_file():
+                continue
+            try:
+                _lyrics_for(path)
+            except (urllib.error.URLError, OSError, ValueError):
+                return  # offline - stop quietly; lyrics load on demand later
+            time.sleep(0.4)  # be gentle with the free service
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+# ---------------- finding duplicates ----------------
+# Two kinds: byte-identical files (whatever they're called), and the same song
+# saved twice - same title (ignoring "(feat. ...)"-style suffixes), same lead
+# artist, and nearly the same length. Merging keeps one copy and moves the
+# others' play counts and playlist spots onto it.
+
+def _file_sha1(path):
+    digest = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _find_duplicate_groups():
+    meta, stats, playlists = _load_meta(), _load_stats(), _load_playlists()
+    info = {}
+    for path in find_track_paths():
+        title, artist = _name_fields(path, meta)
+        info[path.name] = {
+            "path": path, "title": title, "artist": artist,
+            "duration": _track_duration(path), "size": path.stat().st_size,
+            "title_key": _words(_lyrics_clean_title(title)),
+            "artist_key": _words(_lyrics_first_artist(artist)),
+        }
+
+    parent = {name: name for name in info}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x, y):
+        parent[find(x)] = find(y)
+
+    # 1) identical bytes - only hash files that share a size
+    hashes = {}
+    by_size = {}
+    for name, item in info.items():
+        by_size.setdefault(item["size"], []).append(name)
+    for names in by_size.values():
+        if len(names) < 2:
+            continue
+        by_hash = {}
+        for name in names:
+            hashes[name] = _file_sha1(info[name]["path"])
+            by_hash.setdefault(hashes[name], []).append(name)
+        for same in by_hash.values():
+            for other in same[1:]:
+                union(same[0], other)
+
+    # 2) the same song under a different name
+    by_title = {}
+    for name, item in info.items():
+        if item["title_key"]:
+            by_title.setdefault(item["title_key"], []).append(name)
+    for names in by_title.values():
+        for i, a_name in enumerate(names):
+            for b_name in names[i + 1:]:
+                a_item, b_item = info[a_name], info[b_name]
+                if not (a_item["duration"] and b_item["duration"]):
+                    continue
+                if abs(a_item["duration"] - b_item["duration"]) > 3:
+                    continue
+                if a_item["artist_key"] and b_item["artist_key"] and a_item["artist_key"] != b_item["artist_key"]:
+                    continue
+                union(a_name, b_name)
+
+    groups = {}
+    for name in info:
+        groups.setdefault(find(name), []).append(name)
+
+    playlist_count = {}
+    for pl in playlists:
+        for track_id in pl["track_ids"]:
+            playlist_count[track_id] = playlist_count.get(track_id, 0) + 1
+
+    result = []
+    for names in groups.values():
+        if len(names) < 2:
+            continue
+
+        def rank(n):
+            # keep the most-played, then most-playlisted, then biggest (best quality),
+            # then the one with the fuller name (more credited artists)
+            return (-stats.get(n, 0), -playlist_count.get(n, 0), -info[n]["size"], -len(n))
+
+        names.sort(key=rank)
+        identical = len({hashes.get(n) for n in names}) == 1 and None not in {hashes.get(n) for n in names}
+        files = []
+        for i, name in enumerate(names):
+            item = info[name]
+            cover = _cover_path_for(item["path"])
+            files.append({
+                "id": name, "title": item["title"], "artist": item["artist"],
+                "duration": item["duration"], "size": item["size"],
+                "plays": stats.get(name, 0), "playlists": playlist_count.get(name, 0),
+                "cover": f"/covers/{urllib.parse.quote(cover.name)}" if cover.is_file() else None,
+                "keep": i == 0,
+            })
+        result.append({"reason": "identical" if identical else "same-song", "files": files})
+    result.sort(key=lambda g: g["files"][0]["title"].casefold())
+    for i, group in enumerate(result):
+        group["id"] = i
+    return result
+
+
+@app.get("/api/duplicates")
+def api_find_duplicates():
+    groups = _find_duplicate_groups()
+    return jsonify({"groups": groups, "extra_files": sum(len(g["files"]) - 1 for g in groups)})
+
+
+@app.post("/api/duplicates/merge")
+def api_merge_duplicates():
+    """{groups: [{keep, remove: [ids]}]} - deletes the `remove` copies, moving
+    their play counts, playlist spots and import sources onto `keep`."""
+    groups = (request.get_json(silent=True) or {}).get("groups")
+    if not isinstance(groups, list) or not groups:
+        return jsonify({"error": "groups required"}), 400
+
+    removed = []
+    with _lock:
+        playlists, stats, sources = _load_playlists(), _load_stats(), _load_sources()
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            keep = group.get("keep")
+            keep_path = _safe_track_path(keep)
+            if keep_path is None or not keep_path.is_file():
+                continue
+            drop = []
+            for track_id in group.get("remove") or []:
+                path = _safe_track_path(track_id)
+                if track_id != keep and path is not None and path.is_file():
+                    drop.append(track_id)
+            if not drop:
+                continue
+            gone = set(drop)
+            for pl in playlists:
+                if gone.isdisjoint(pl["track_ids"]):
+                    continue
+                seen, merged = set(), []
+                for track_id in pl["track_ids"]:
+                    track_id = keep if track_id in gone else track_id
+                    if track_id not in seen:
+                        seen.add(track_id)
+                        merged.append(track_id)
+                pl["track_ids"] = merged
+            total = stats.get(keep, 0) + sum(stats.get(t, 0) for t in drop)
+            if total:
+                stats[keep] = total
+            for key, name in list(sources.items()):
+                if name in gone:
+                    sources[key] = keep
+            removed.extend(drop)
+        _save_playlists(playlists)
+        _save_stats(stats)
+        DATA_DIR.mkdir(exist_ok=True)
+        SOURCES_FILE.write_text(json.dumps(sources, indent=2), encoding="utf-8")
+
+    deleted = _delete_tracks(removed) if removed else 0
+    return jsonify({"removed": len(removed), "deleted": deleted})
 
 
 # ---------------- fixing old names ----------------
@@ -1399,6 +1591,7 @@ def api_download():
     def worker():
         LIBRARY_DIR.mkdir(exist_ok=True)
         COVERS_DIR.mkdir(exist_ok=True)
+        new_ids = []  # songs this job actually added, for the lyrics prefetch
         try:
             if mode == "playlist":
                 _run_playlist_import(url, job, progress_hook, body.get("as_playlist", True) is not False)
@@ -1412,10 +1605,15 @@ def api_download():
                     else:
                         path, title = _download_youtube(url, progress_hook)
                 job["title"] = title
+                if not job["duplicate"]:
+                    new_ids = [path.name]
             job["status"] = "done"
         except Exception as e:
             job.update(status="error", error=str(e))
+        if mode == "playlist":
+            new_ids = [item["id"] for item in job["added"]]
         _scan_loudness_async()  # measure whatever was just added
+        _prefetch_lyrics_async(new_ids)
 
     threading.Thread(target=worker, daemon=True).start()
     return jsonify({"job_id": job_id}), 202

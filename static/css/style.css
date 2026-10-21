@@ -1644,6 +1644,56 @@ input {
 }
 .fix-tag.source { color: var(--accent); border-color: rgba(var(--accent-rgb), 0.45); }
 
+.dupe-group {
+  margin: 0 8px 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+}
+
+.dupe-group.skipped { opacity: 0.55; }
+
+.dupe-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.dupe-head label { display: flex; align-items: center; gap: 8px; cursor: pointer; flex: 1; }
+.dupe-head input { accent-color: var(--accent); margin: 0; }
+
+.dupe-file {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 7px 4px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.dupe-file:hover { background: var(--bg-hover); }
+.dupe-file input { accent-color: var(--accent); margin: 3px 0 0; }
+.dupe-name { font-size: 13.5px; font-weight: 600; word-break: break-word; }
+.dupe-meta { font-size: 12px; color: var(--text-faint); margin-top: 2px; }
+.dupe-file.removing .dupe-name { color: var(--text-faint); text-decoration: line-through; font-weight: 500; }
+.dupe-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+  vertical-align: 1px;
+}
+.dupe-badge.keep { color: var(--accent); border: 1px solid rgba(var(--accent-rgb), 0.45); }
+.dupe-badge.remove { color: var(--danger); border: 1px solid rgba(255, 92, 114, 0.4); }
+
 .settings-inline {
   display: flex;
   align-items: center;

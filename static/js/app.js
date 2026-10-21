@@ -147,6 +147,12 @@
   const lyricsSourceEl = document.getElementById("lyrics-source");
   const lyricsRetryBtn = document.getElementById("lyrics-retry");
   const lyricsSetting = document.getElementById("lyrics-setting");
+  const findDupesBtn = document.getElementById("find-dupes-btn");
+  const dupesBackdrop = document.getElementById("dupes-backdrop");
+  const dupesStatusEl = document.getElementById("dupes-status");
+  const dupesListEl = document.getElementById("dupes-list");
+  const dupesApplyBtn = document.getElementById("dupes-apply");
+  const dupesCancelBtn = document.getElementById("dupes-cancel");
   const fixNamesBtn = document.getElementById("fix-names-btn");
   const fixBackdrop = document.getElementById("fixnames-backdrop");
   const fixStatusEl = document.getElementById("fixnames-status");
@@ -1895,11 +1901,16 @@
 
   // ---------------- deleting tracks ----------------
 
-  async function deleteTracks(trackIds) {
-    const gone = new Set(trackIds);
+  // Updates the player's own state after songs were deleted from the library.
+  // `replacements` (removed id -> kept id) swaps queued copies for the kept
+  // song instead of dropping them.
+  function forgetTracks(gone, replacements) {
     const wasPlaying = !!state.current && gone.has(state.current.id);
-    await api("POST", "/api/tracks/batch-delete", { track_ids: trackIds });
-    state.upNext = state.upNext.filter((e) => !gone.has(e.track.id));
+    state.upNext = state.upNext.flatMap((entry) => {
+      if (!gone.has(entry.track.id)) return [entry];
+      const kept = replacements && state.library.find((t) => t.id === replacements.get(entry.track.id));
+      return kept ? [{ ...entry, track: kept }] : [];
+    });
     decks.forEach((d) => { if (d.track && gone.has(d.track.id)) d.track = null; });
     if (wasPlaying) {
       stopPlayback();
@@ -1908,6 +1919,11 @@
       updateNowPlayingUI(null);
     }
     onQueueChanged();
+  }
+
+  async function deleteTracks(trackIds) {
+    await api("POST", "/api/tracks/batch-delete", { track_ids: trackIds });
+    forgetTracks(new Set(trackIds));
     await Promise.all([loadLibrary(), loadPlaylists()]);
     renderSidebar();
     renderView();
@@ -2607,6 +2623,142 @@
     syncLyricsUi();
     ensureLyrics();
     startLyricsSync();
+  });
+
+  // ---------------- find duplicates ----------------
+
+  let dupeGroups = [];
+  const dupeKeep = new Map();    // group id -> id of the copy to keep
+  const dupeSkipped = new Set(); // group ids left alone
+
+  const formatSize = (bytes) => (bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
+
+  function closeDupes() {
+    setHidden(dupesBackdrop, true);
+    dupeGroups = [];
+  }
+
+  function dupeRemovalCount() {
+    return dupeGroups.reduce((n, g) => n + (dupeSkipped.has(g.id) ? 0 : g.files.length - 1), 0);
+  }
+
+  function updateDupesApply() {
+    const n = dupeRemovalCount();
+    dupesApplyBtn.disabled = n === 0;
+    dupesApplyBtn.textContent = n > 0 ? `Remove ${n} duplicate${n === 1 ? "" : "s"}` : "Merge";
+  }
+
+  function renderDupes() {
+    dupesListEl.innerHTML = "";
+    for (const group of dupeGroups) {
+      const box = document.createElement("div");
+      box.className = "dupe-group" + (dupeSkipped.has(group.id) ? " skipped" : "");
+
+      const head = document.createElement("div");
+      head.className = "dupe-head";
+      const label = document.createElement("label");
+      const merge = document.createElement("input");
+      merge.type = "checkbox";
+      merge.checked = !dupeSkipped.has(group.id);
+      merge.addEventListener("change", () => {
+        if (merge.checked) dupeSkipped.delete(group.id);
+        else dupeSkipped.add(group.id);
+        renderDupes();
+      });
+      const kind = group.reason === "identical" ? "identical files" : "same song, different files";
+      label.append(merge, document.createTextNode(`${group.files.length} copies — ${kind}`));
+      head.appendChild(label);
+      box.appendChild(head);
+
+      const keepId = dupeKeep.get(group.id);
+      for (const file of group.files) {
+        const row = document.createElement("label");
+        const isKept = file.id === keepId;
+        row.className = "dupe-file" + (isKept || dupeSkipped.has(group.id) ? "" : " removing");
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = `dupe-${group.id}`;
+        radio.checked = isKept;
+        radio.addEventListener("change", () => { dupeKeep.set(group.id, file.id); renderDupes(); });
+        const text = document.createElement("div");
+        const name = document.createElement("div");
+        name.className = "dupe-name";
+        name.textContent = file.artist ? `${file.artist} — ${file.title}` : file.title;
+        const badge = document.createElement("span");
+        badge.className = "dupe-badge " + (isKept ? "keep" : "remove");
+        badge.textContent = isKept ? "keep" : (dupeSkipped.has(group.id) ? "" : "remove");
+        if (badge.textContent) name.appendChild(badge);
+        const meta = document.createElement("div");
+        meta.className = "dupe-meta";
+        const bits = [formatTime(file.duration), formatSize(file.size)];
+        bits.push(file.plays === 1 ? "1 play" : `${file.plays} plays`);
+        if (file.playlists) bits.push(file.playlists === 1 ? "in 1 playlist" : `in ${file.playlists} playlists`);
+        meta.textContent = bits.join(" · ");
+        text.append(name, meta);
+        row.append(radio, text);
+        box.appendChild(row);
+      }
+      dupesListEl.appendChild(box);
+    }
+    updateDupesApply();
+  }
+
+  async function openDupes() {
+    dupeGroups = [];
+    dupeKeep.clear();
+    dupeSkipped.clear();
+    dupesListEl.innerHTML = "";
+    dupesStatusEl.textContent = "Scanning your library…";
+    updateDupesApply();
+    setHidden(dupesBackdrop, false);
+    let result;
+    try {
+      result = await api("GET", "/api/duplicates");
+    } catch (err) {
+      dupesStatusEl.textContent = err.message;
+      return;
+    }
+    dupeGroups = result.groups;
+    for (const group of dupeGroups) {
+      const keeper = group.files.find((f) => f.keep) || group.files[0];
+      dupeKeep.set(group.id, keeper.id);
+    }
+    if (dupeGroups.length === 0) {
+      dupesStatusEl.textContent = "No duplicates found — every song is unique.";
+    } else {
+      const n = dupeGroups.length;
+      dupesStatusEl.textContent = `Found ${n} song${n === 1 ? "" : "s"} saved more than once. The copy marked "keep" stays; pick a different one with the buttons. Plays and playlist spots of removed copies move to the one you keep.`;
+    }
+    renderDupes();
+  }
+
+  async function applyDupes() {
+    const merges = dupeGroups
+      .filter((g) => !dupeSkipped.has(g.id))
+      .map((g) => ({ keep: dupeKeep.get(g.id), remove: g.files.map((f) => f.id).filter((id) => id !== dupeKeep.get(g.id)) }));
+    const total = merges.reduce((n, m) => n + m.remove.length, 0);
+    if (total === 0) return;
+    if (!confirm(`Delete ${total} duplicate file${total === 1 ? "" : "s"}? This can't be undone. Their plays and playlist spots move to the copy you keep.`)) return;
+    try {
+      await api("POST", "/api/duplicates/merge", { groups: merges });
+      const replacements = new Map();
+      merges.forEach((m) => m.remove.forEach((id) => replacements.set(id, m.keep)));
+      forgetTracks(new Set(replacements.keys()), replacements);
+      closeDupes();
+      await Promise.all([loadLibrary(), loadPlaylists()]);
+      renderSidebar();
+      renderView();
+      flash(`Removed ${total} duplicate${total === 1 ? "" : "s"}`);
+    } catch (err) {
+      dupesStatusEl.textContent = err.message;
+    }
+  }
+
+  findDupesBtn.addEventListener("click", openDupes);
+  dupesApplyBtn.addEventListener("click", applyDupes);
+  dupesCancelBtn.addEventListener("click", closeDupes);
+  dupesBackdrop.addEventListener("click", (e) => {
+    if (e.target === dupesBackdrop) closeDupes();
   });
 
   // ---------------- fix old names ----------------
