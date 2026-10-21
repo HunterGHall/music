@@ -26,7 +26,7 @@
     shufflePos: -1,      // current position within shuffleOrder
     settings: {
       accent_color: "#ff8a3d", idle_timeout_minutes: 2, normalize_volume: true,
-      transition_mode: "gapless", crossfade_seconds: 5,
+      transition_mode: "gapless", crossfade_seconds: 5, lyrics_enabled: true,
     },
   };
 
@@ -141,6 +141,12 @@
   const volume = document.getElementById("volume");
   const muteBtn = document.getElementById("mute-btn");
 
+  const lyricsToggle = document.getElementById("lyrics-toggle");
+  const lyricsPanel = document.getElementById("lyrics-panel");
+  const lyricsBody = document.getElementById("lyrics-body");
+  const lyricsSourceEl = document.getElementById("lyrics-source");
+  const lyricsRetryBtn = document.getElementById("lyrics-retry");
+  const lyricsSetting = document.getElementById("lyrics-setting");
   const fixNamesBtn = document.getElementById("fix-names-btn");
   const fixBackdrop = document.getElementById("fixnames-backdrop");
   const fixStatusEl = document.getElementById("fixnames-status");
@@ -469,6 +475,8 @@
       setHidden(nowplayingPageEl, false);
       clearIdleHint();
       startVisualizer();
+      ensureLyrics();
+      startLyricsSync();
       return;
     }
     hideAllPages();
@@ -1236,6 +1244,7 @@
       nowplayingTitle.textContent = track.title;
       nowplayingArtist.textContent = track.artist || "Unknown artist";
     }
+    ensureLyrics();
   }
 
   function playPause() {
@@ -1804,6 +1813,10 @@
       // Audio routed through the graph is silent while the context is suspended.
       if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
       startVisualizer();
+      startLyricsSync();
+    });
+    el.addEventListener("seeked", () => {
+      if (el === audio) updateLyricsLine();
     });
     el.addEventListener("pause", () => {
       if (el !== audio) return;
@@ -2386,7 +2399,11 @@
     for (const t of copies) {
       if (t && t.id === updated.id) Object.assign(t, fields);
     }
-    if (state.current && state.current.id === updated.id) updateNowPlayingUI(state.current);
+    lyricsCache.delete(updated.id);
+    if (state.current && state.current.id === updated.id) {
+      lyrics.loadedFor = null;
+      updateNowPlayingUI(state.current);
+    }
   }
 
   async function saveEditTrack(reset) {
@@ -2419,6 +2436,177 @@
       if (e.key === "Enter") { e.preventDefault(); saveEditTrack(false); }
       if (e.key === "Escape") { e.preventDefault(); closeEditTrack(); }
     });
+  });
+
+  // ---------------- lyrics ----------------
+  // Looked up through the server (which caches them). Timed lyrics highlight
+  // the current line and scroll with the song; plain lyrics just display.
+
+  const lyrics = {
+    open: false,        // the Lyrics button on Now Playing is on
+    loadedFor: null,    // id of the track whose lyrics are loaded or loading
+    data: null,         // the server's result for that track
+    lines: [],          // the rendered synced-line elements
+    active: -1,         // index of the highlighted line
+    userScrollUntil: 0, // don't auto-scroll until this time (the user scrolled)
+  };
+  const lyricsCache = new Map();   // track id -> result, for this session
+  let lyricsRaf = 0;
+
+  const lyricsEnabled = () => state.settings.lyrics_enabled !== false;
+  const lyricsVisible = () => lyricsEnabled() && lyrics.open && state.view.type === "nowplaying";
+
+  function syncLyricsUi() {
+    const show = lyricsEnabled() && lyrics.open;
+    setHidden(lyricsToggle, !lyricsEnabled());
+    setHidden(lyricsPanel, !show);
+    lyricsToggle.classList.toggle("active", show);
+    lyricsToggle.title = show ? "Hide lyrics" : "Show lyrics";
+  }
+
+  function showLyricsMessage(text, canRetry) {
+    lyricsBody.classList.add("is-message");
+    lyricsBody.innerHTML = "";
+    const p = document.createElement("p");
+    p.className = "lyrics-msg";
+    p.textContent = text;
+    lyricsBody.appendChild(p);
+    lyrics.lines = [];
+    lyrics.active = -1;
+    lyricsSourceEl.textContent = "";
+    setHidden(lyricsRetryBtn, !canRetry);
+  }
+
+  function renderLyrics(data) {
+    lyrics.data = data;
+    if (!data) { showLyricsMessage("", false); return; }
+    if (data.status === "loading") { showLyricsMessage("Looking for lyrics…", false); return; }
+    if (data.status === "disabled") { showLyricsMessage("Lyrics are turned off in Settings.", false); return; }
+    if (data.status === "instrumental") { showLyricsMessage("Instrumental — no lyrics.", true); return; }
+    if (data.status === "error") { showLyricsMessage(data.message || "Couldn't reach the lyrics service.", true); return; }
+    if (data.status !== "found") { showLyricsMessage("No lyrics found for this song.", true); return; }
+
+    lyricsBody.classList.remove("is-message");
+    lyricsBody.innerHTML = "";
+    lyrics.lines = [];
+    lyrics.active = -1;
+    if (data.synced && data.synced.length) {
+      data.synced.forEach((line, i) => {
+        const el = document.createElement("div");
+        el.className = "lyric-line" + (line.text ? "" : " blank");
+        el.textContent = line.text || "♪";
+        if (!line.text) el.style.opacity = "0.5";
+        el.addEventListener("click", () => {
+          if (!line.text) return;
+          finalizeTransition();
+          audio.currentTime = line.t;
+          updateLyricsLine(true);
+        });
+        lyricsBody.appendChild(el);
+        lyrics.lines.push(el);
+      });
+      lyricsBody.scrollTop = 0;
+      updateLyricsLine(true);
+    } else {
+      const plain = document.createElement("div");
+      plain.className = "lyrics-plain";
+      plain.textContent = data.plain || "";
+      lyricsBody.appendChild(plain);
+      lyricsBody.scrollTop = 0;
+    }
+    lyricsSourceEl.textContent = "Lyrics from LRCLIB" + (data.synced && data.synced.length ? " · synced" : "");
+    setHidden(lyricsRetryBtn, false);
+  }
+
+  async function loadLyricsFor(track, force) {
+    lyrics.loadedFor = track.id;
+    const cached = force ? null : lyricsCache.get(track.id);
+    if (cached) { renderLyrics(cached); return; }
+    renderLyrics({ status: "loading" });
+    let result;
+    try {
+      result = await api("GET", `/api/tracks/${encodeURIComponent(track.id)}/lyrics${force ? "?refresh=1" : ""}`);
+    } catch (err) {
+      result = { status: "error", message: "Couldn't reach the lyrics service." };
+    }
+    if (lyrics.loadedFor !== track.id) return;   // the song changed while we waited
+    if (result.status !== "error") lyricsCache.set(track.id, result);
+    renderLyrics(result);
+    startLyricsSync();
+  }
+
+  // Loads lyrics for the current song if they're on screen and not loaded yet.
+  function ensureLyrics() {
+    if (!state.current) {
+      lyrics.loadedFor = null;
+      renderLyrics(null);
+      return;
+    }
+    if (!lyricsVisible() || lyrics.loadedFor === state.current.id) return;
+    loadLyricsFor(state.current, false);
+  }
+
+  // Highlights the line being sung and keeps it centred.
+  function updateLyricsLine(forceScroll) {
+    const data = lyrics.data;
+    if (!data || data.status !== "found" || !data.synced || !data.synced.length || lyrics.lines.length === 0) return;
+    const now = audio.currentTime + 0.15;
+    let lo = 0, hi = data.synced.length - 1, idx = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (data.synced[mid].t <= now) { idx = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    if (idx === lyrics.active && !forceScroll) return;
+    if (lyrics.lines[lyrics.active]) lyrics.lines[lyrics.active].classList.remove("active");
+    lyrics.active = idx;
+    const el = lyrics.lines[idx];
+    if (!el) return;
+    el.classList.add("active");
+    if (forceScroll || performance.now() > lyrics.userScrollUntil) {
+      lyricsBody.scrollTo({
+        top: el.offsetTop - lyricsBody.clientHeight / 2 + el.clientHeight / 2,
+        behavior: forceScroll ? "auto" : "smooth",
+      });
+    }
+  }
+
+  function lyricsTick() {
+    lyricsRaf = 0;
+    if (!lyricsVisible() || audio.paused) return;
+    updateLyricsLine(false);
+    lyricsRaf = requestAnimationFrame(lyricsTick);
+  }
+
+  function startLyricsSync() {
+    if (lyricsRaf || !lyricsVisible() || audio.paused) return;
+    if (!lyrics.data || lyrics.data.status !== "found") return;
+    lyricsRaf = requestAnimationFrame(lyricsTick);
+  }
+
+  lyricsToggle.addEventListener("click", () => {
+    lyrics.open = !lyrics.open;
+    syncLyricsUi();
+    ensureLyrics();
+    startLyricsSync();
+    scheduleSaveState();
+  });
+
+  lyricsRetryBtn.addEventListener("click", () => {
+    if (state.current) loadLyricsFor(state.current, true);
+  });
+
+  // Manual scrolling pauses the auto-follow for a few seconds.
+  ["wheel", "touchstart", "pointerdown"].forEach((evt) => {
+    lyricsBody.addEventListener(evt, () => { lyrics.userScrollUntil = performance.now() + 4000; }, { passive: true });
+  });
+
+  lyricsSetting.addEventListener("change", () => {
+    state.settings.lyrics_enabled = lyricsSetting.checked;
+    saveSettings({ lyrics_enabled: lyricsSetting.checked });
+    lyrics.loadedFor = null;
+    syncLyricsUi();
+    ensureLyrics();
+    startLyricsSync();
   });
 
   // ---------------- fix old names ----------------
@@ -2573,6 +2761,7 @@
       sortKey: state.sortKey,
       sortDir: state.sortDir,
       artistFilter: state.artistFilter,
+      lyricsOpen: lyrics.open,
     };
   }
 
@@ -2604,6 +2793,7 @@
       state.sortDir = saved.sortDir === "desc" ? "desc" : "asc";
     }
     if (typeof saved.artistFilter === "string") state.artistFilter = saved.artistFilter;
+    if (typeof saved.lyricsOpen === "boolean") lyrics.open = saved.lyricsOpen;
     state.repeat = ["off", "all", "one"].includes(saved.repeat) ? saved.repeat : "off";
     syncRepeatUi();
 
@@ -2674,6 +2864,8 @@
       console.warn("Could not restore the previous session", err);
     }
     stateRestored = true;
+    lyricsSetting.checked = lyricsEnabled();
+    syncLyricsUi();
     resetIdleTimer();
     renderSidebar();
     renderView();

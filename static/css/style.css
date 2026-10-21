@@ -592,15 +592,27 @@ input {
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow-y: auto;
 }
 
 .nowplaying-content {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 40px;
+  max-width: 900px;
+  margin: auto;
+  text-align: center;
+}
+
+.np-main {
+  display: flex;
   flex-direction: column;
   align-items: center;
   gap: 18px;
-  max-width: 360px;
-  text-align: center;
+  width: 320px;
+  max-width: 100%;
 }
 
 .nowplaying-art {
@@ -655,6 +667,107 @@ input {
   height: 80px;
   margin-top: 6px;
 }
+
+/* lyrics */
+.lyrics-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-elevated);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 13px;
+}
+
+.lyrics-toggle svg { width: 14px; height: 14px; }
+.lyrics-toggle:hover { color: var(--text); }
+
+.lyrics-toggle.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.lyrics-panel {
+  display: flex;
+  flex-direction: column;
+  width: 380px;
+  max-width: 100%;
+  height: min(62vh, 440px);
+  text-align: left;
+}
+
+.lyrics-body {
+  position: relative;
+  flex: 1;
+  overflow-y: auto;
+  padding: 120px 8px;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 22%, #000 78%, transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 22%, #000 78%, transparent 100%);
+}
+
+.lyrics-body::-webkit-scrollbar { display: none; }
+
+.lyric-line {
+  padding: 5px 0;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: color 0.25s ease;
+}
+
+.lyric-line:hover { color: var(--text-dim); }
+.lyric-line.active { color: var(--text); }
+.lyric-line.blank { cursor: default; min-height: 1em; }
+
+.lyrics-plain {
+  white-space: pre-wrap;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--text-dim);
+}
+
+.lyrics-msg {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.lyrics-body.is-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+.lyrics-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 8px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.lyrics-retry {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  padding: 2px 4px;
+}
+
+.lyrics-retry:hover { color: var(--text); text-decoration: underline; }
 
 /* ---------------- queue page ---------------- */
 

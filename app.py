@@ -1,10 +1,13 @@
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import shutil
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -23,6 +26,8 @@ SOURCES_FILE = DATA_DIR / "sources.json"
 LOUDNESS_FILE = DATA_DIR / "loudness.json"
 META_FILE = DATA_DIR / "metadata.json"        # user-edited title/artist per track
 PLAYER_STATE_FILE = DATA_DIR / "player_state.json"
+LYRICS_DIR = DATA_DIR / "lyrics"              # cached lyrics lookups, one file per track
+LRCLIB_URL = "https://lrclib.net/api/search"  # free, open lyrics database (no key needed)
 TRANSITION_MODES = ("off", "gapless", "crossfade")
 DEFAULT_SETTINGS = {
     "accent_color": "#ff8a3d",
@@ -30,6 +35,7 @@ DEFAULT_SETTINGS = {
     "normalize_volume": True,
     "transition_mode": "gapless",   # off | gapless | crossfade
     "crossfade_seconds": 5,
+    "lyrics_enabled": True,
 }
 TARGET_LUFS = -14.0  # what every track is levelled to (streaming-service norm)
 STATIC_DIR = BASE_DIR / "static"
@@ -754,6 +760,7 @@ def api_delete_all_tracks():
         SOURCES_FILE.write_text("{}", encoding="utf-8")
         LOUDNESS_FILE.write_text("{}", encoding="utf-8")
         _save_meta({})
+    shutil.rmtree(LYRICS_DIR, ignore_errors=True)
     return jsonify({"deleted": deleted})
 
 
@@ -804,6 +811,11 @@ def _delete_tracks(track_ids):
         meta = _load_meta()
         if any(t in meta for t in ids):
             _save_meta({k: v for k, v in meta.items() if k not in ids})
+    for track_id in ids:
+        try:
+            _lyrics_cache_path(track_id).unlink(missing_ok=True)
+        except OSError:
+            pass
     with _loudness_lock:
         loudness = _load_loudness()
         if any(t in loudness for t in ids):
@@ -825,6 +837,140 @@ def api_delete_tracks():
     if not isinstance(track_ids, list) or not track_ids:
         return jsonify({"error": "track_ids required"}), 400
     return jsonify({"deleted": _delete_tracks(track_ids)})
+
+
+# ---------------- lyrics ----------------
+# Looked up on LRCLIB by artist/title/length and cached under data/lyrics, so
+# each song is fetched at most once (a miss is retried after a week, or as
+# soon as the song's name changes).
+
+LYRICS_MISS_RETRY_SECONDS = 7 * 24 * 3600
+
+
+def _lyrics_cache_path(track_id):
+    return LYRICS_DIR / (hashlib.sha1(track_id.encode("utf-8")).hexdigest() + ".json")
+
+
+def _lyrics_clean_title(title):
+    """Drops "(feat. X)", "[Official Video]", "- Remastered 2011" and similar,
+    which often stop a title matching the database entry."""
+    t = re.sub(r"\s*[\(\[][^\)\]]*[\)\]]", "", title)
+    t = re.sub(r"\s+-\s+(?:remaster|radio edit|single|from\b|live\b|mono\b|stereo\b|version\b).*$", "", t, flags=re.I)
+    t = re.sub(r"\s+", " ", t).strip(" -")
+    return t or title
+
+
+def _lyrics_first_artist(artist):
+    return re.split(r"\s*(?:,|&|\bfeat\.?|\bft\.?|\bwith\b)\s*", artist, maxsplit=1, flags=re.I)[0].strip()
+
+
+def _parse_lrc(text):
+    """[mm:ss.xx] timed lines -> [{"t": seconds, "text": line}], sorted."""
+    lines = []
+    for raw in text.splitlines():
+        stamps = re.findall(r"\[(\d+):(\d+(?:\.\d+)?)\]", raw)
+        if not stamps:
+            continue
+        content = re.sub(r"^(?:\[[^\]]*\])+", "", raw).strip()
+        for minutes, seconds in stamps:
+            lines.append({"t": round(int(minutes) * 60 + float(seconds), 2), "text": content})
+    lines.sort(key=lambda line: line["t"])
+    return lines
+
+
+def _lrclib_search(params):
+    req = urllib.request.Request(
+        LRCLIB_URL + "?" + urllib.parse.urlencode(params),
+        headers={"User-Agent": "music-player-local/1.0 (personal project)"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _pick_lyrics(results, titles, artists, duration):
+    """The best database entry for the song: same title and artist, nearly the
+    same length (to avoid live/remix versions), preferring timed lyrics."""
+    title_words = {_words(t) for t in titles}
+    artist_words = {_words(a) for a in artists if a}
+    usable = [r for r in results
+              if (r.get("syncedLyrics") or r.get("plainLyrics") or r.get("instrumental"))
+              and _words(r.get("trackName") or "") in title_words
+              and (not artist_words or any(w and (w in _words(r.get("artistName") or "") or _words(r.get("artistName") or "") in w)
+                                           for w in artist_words))]
+    for tolerance in (4, 12):
+        pool = [r for r in usable if not duration or abs((r.get("duration") or 0) - duration) <= tolerance]
+        if pool:
+            return min(pool, key=lambda r: (not r.get("syncedLyrics"), abs((r.get("duration") or 0) - duration)))
+    return None
+
+
+def _fetch_lyrics(title, artist, duration):
+    """Looks the song up, retrying with a cleaned-up title and the first
+    credited artist. Returns a result dict; raises on network errors."""
+    clean = _lyrics_clean_title(title)
+    first = _lyrics_first_artist(artist)
+    titles, artists = [title, clean], [artist, first]
+    attempts = []
+    for t, a in ((title, artist), (clean, artist), (clean, first)):
+        if (t, a) not in attempts:
+            attempts.append((t, a))
+    picked = None
+    for t, a in attempts:
+        params = {"track_name": t}
+        if a:
+            params["artist_name"] = a
+        picked = _pick_lyrics(_lrclib_search(params), titles, artists, duration)
+        if picked:
+            break
+    if not picked:
+        picked = _pick_lyrics(_lrclib_search({"q": f"{first} {clean}".strip()}), titles, artists, duration)
+    if not picked:
+        return {"status": "none"}
+    if picked.get("instrumental") and not picked.get("plainLyrics") and not picked.get("syncedLyrics"):
+        return {"status": "instrumental"}
+    return {
+        "status": "found",
+        "synced": _parse_lrc(picked["syncedLyrics"]) if picked.get("syncedLyrics") else None,
+        "plain": picked.get("plainLyrics"),
+        "match": {"title": picked.get("trackName"), "artist": picked.get("artistName"),
+                  "duration": picked.get("duration")},
+    }
+
+
+@app.get("/api/tracks/<path:track_id>/lyrics")
+def api_track_lyrics(track_id):
+    path = _safe_track_path(track_id)
+    if path is None or not path.is_file():
+        abort(404)
+    if not _load_settings().get("lyrics_enabled", True):
+        return jsonify({"status": "disabled"})
+
+    title, artist = _name_fields(path)
+    query = {"title": title, "artist": artist}
+    cache_file = _lyrics_cache_path(track_id)
+    refresh = request.args.get("refresh") == "1"
+
+    if cache_file.is_file() and not refresh:
+        try:
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
+            result = cached["result"]
+            expired = result["status"] == "none" and time.time() - cached["fetched"] > LYRICS_MISS_RETRY_SECONDS
+            if cached["query"] == query and not expired:
+                return jsonify(result)
+        except Exception:
+            pass  # unreadable cache - just look it up again
+
+    try:
+        result = _fetch_lyrics(title, artist, _track_duration(path))
+    except (urllib.error.URLError, OSError, ValueError):
+        # Offline or the service is down: report it, but don't cache the failure.
+        return jsonify({"status": "error", "message": "Couldn't reach the lyrics service."})
+
+    with _lock:
+        LYRICS_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps({"query": query, "fetched": time.time(), "result": result}),
+                              encoding="utf-8")
+    return jsonify(result)
 
 
 # ---------------- fixing old names ----------------
@@ -1006,6 +1152,8 @@ def api_update_settings():
             settings["accent_color"] = color
         if isinstance(body.get("normalize_volume"), bool):
             settings["normalize_volume"] = body["normalize_volume"]
+        if isinstance(body.get("lyrics_enabled"), bool):
+            settings["lyrics_enabled"] = body["lyrics_enabled"]
         if body.get("transition_mode") in TRANSITION_MODES:
             settings["transition_mode"] = body["transition_mode"]
         if "crossfade_seconds" in body:

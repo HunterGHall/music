@@ -122,6 +122,7 @@
     <div id="nowplaying-page" class="nowplaying-page" hidden>
       <p id="nowplaying-empty" class="dash-empty-hint">Nothing playing right now &mdash; pick a track from All Songs or a playlist.</p>
       <div id="nowplaying-content" class="nowplaying-content" hidden>
+        <div class="np-main">
         <div class="nowplaying-art">
           <img id="nowplaying-cover" alt="" hidden>
           <div id="nowplaying-cover-fallback" class="nowplaying-cover-fallback">
@@ -130,7 +131,19 @@
         </div>
         <div id="nowplaying-title" class="nowplaying-title">&nbsp;</div>
         <div id="nowplaying-artist" class="nowplaying-artist">&nbsp;</div>
+        <button id="lyrics-toggle" class="lyrics-toggle" type="button" title="Show lyrics">
+          <svg viewBox="0 0 24 24"><path d="M4 6h16M4 11h16M4 16h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          Lyrics
+        </button>
         <canvas id="nowplaying-visualizer" class="nowplaying-visualizer" width="720" height="160"></canvas>
+        </div>
+        <div id="lyrics-panel" class="lyrics-panel" hidden>
+          <div id="lyrics-body" class="lyrics-body"></div>
+          <div class="lyrics-foot">
+            <span id="lyrics-source" class="lyrics-source"></span>
+            <button id="lyrics-retry" class="lyrics-retry" type="button">Search again</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -162,6 +175,13 @@
             <p>Plays loud and quiet songs at about the same level.</p>
           </div>
           <input id="normalize-toggle" class="switch" type="checkbox" checked>
+        </div>
+        <div class="settings-item">
+          <div class="settings-item-text">
+            <label for="lyrics-setting">Lyrics</label>
+            <p>Looks up lyrics for the song that's playing (Now Playing &rarr; Lyrics). This sends the song's artist, title and length to lrclib.net, a free lyrics database. Results are saved on this computer.</p>
+          </div>
+          <input id="lyrics-setting" class="switch" type="checkbox" checked>
         </div>
         <div class="settings-item">
           <div class="settings-item-text">
