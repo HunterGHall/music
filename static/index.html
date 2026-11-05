@@ -257,6 +257,21 @@
       </section>
 
       <section class="settings-card">
+        <h2>Spotify playlist watch</h2>
+        <div class="settings-item settings-item-stack">
+          <div class="settings-item-text">
+            <label for="sync-url-input">Playlist to watch</label>
+            <p>Paste a Spotify playlist link. Every minute it's checked for new songs, and you're asked whether to add each one. Songs already in the playlist when you set it aren't offered.</p>
+            <p id="sync-status" class="sync-status"></p>
+          </div>
+          <div class="settings-inline sync-url-row">
+            <input id="sync-url-input" type="text" placeholder="https://open.spotify.com/playlist/...">
+            <button id="sync-save-btn" class="btn-secondary" type="button">Save</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-card">
         <h2>Library</h2>
         <div class="settings-item">
           <div class="settings-item-text">
@@ -403,6 +418,20 @@
       <input id="volume" class="slider" type="range" min="0" max="100" value="70">
     </div>
   </footer>
+</div>
+
+<div id="sync-prompt" class="sync-prompt" hidden>
+  <img id="sync-prompt-cover" alt="">
+  <div class="sync-prompt-body">
+    <div class="sync-prompt-label">New in your Spotify playlist <span id="sync-prompt-count"></span></div>
+    <div id="sync-prompt-title" class="sync-prompt-title"></div>
+    <div id="sync-prompt-artist" class="sync-prompt-artist"></div>
+    <div id="sync-prompt-msg" class="sync-prompt-msg"></div>
+    <div class="sync-prompt-actions">
+      <button id="sync-skip" class="btn-ghost" type="button">Skip</button>
+      <button id="sync-add" class="btn-primary" type="button">Add to library</button>
+    </div>
+  </div>
 </div>
 
 <div id="modal-backdrop" class="modal-backdrop" hidden>
