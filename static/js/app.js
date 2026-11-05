@@ -3342,6 +3342,123 @@
     } catch (_) { /* best effort */ }
   });
 
+  // ---------------- spotify playlist watch ----------------
+
+  const syncUrlInput = document.getElementById("sync-url-input");
+  const syncSaveBtn = document.getElementById("sync-save-btn");
+  const syncStatusEl = document.getElementById("sync-status");
+  const syncPrompt = document.getElementById("sync-prompt");
+  const syncCover = document.getElementById("sync-prompt-cover");
+  const syncCount = document.getElementById("sync-prompt-count");
+  const syncTitle = document.getElementById("sync-prompt-title");
+  const syncArtist = document.getElementById("sync-prompt-artist");
+  const syncMsg = document.getElementById("sync-prompt-msg");
+  const syncAddBtn = document.getElementById("sync-add");
+  const syncSkipBtn = document.getElementById("sync-skip");
+  let syncPending = [];
+  let syncBusy = false;
+
+  function renderSyncStatus(info) {
+    syncStatusEl.classList.toggle("error", !!(info && info.error));
+    if (!info || !info.url) { syncStatusEl.textContent = ""; return; }
+    if (info.error) { syncStatusEl.textContent = info.error; return; }
+    syncStatusEl.textContent = info.last_checked
+      ? `Last checked ${new Date(info.last_checked * 1000).toLocaleTimeString()}`
+      : "Checking\u2026";
+  }
+
+  function renderSyncPrompt() {
+    if (syncBusy) return;
+    const t = syncPending[0];
+    setHidden(syncPrompt, !t);
+    if (!t) return;
+    syncCover.src = t.cover || "";
+    syncTitle.textContent = t.title;
+    syncArtist.textContent = t.artist || "";
+    syncCount.textContent = syncPending.length > 1 ? `(+${syncPending.length - 1} more)` : "";
+    syncMsg.textContent = "";
+    syncMsg.classList.remove("error");
+    syncAddBtn.disabled = syncSkipBtn.disabled = false;
+  }
+
+  async function refreshSync() {
+    if (syncBusy) return;
+    try {
+      const info = await api("GET", "/api/sync");
+      syncPending = info.pending;
+      renderSyncStatus(info);
+      renderSyncPrompt();
+    } catch (_) { /* server busy; try again next tick */ }
+  }
+
+  async function resolveSyncTrack(t) {
+    await api("POST", `/api/sync/${t.id}/resolve`);
+    syncPending = syncPending.filter((p) => p.id !== t.id);
+  }
+
+  syncSkipBtn.addEventListener("click", async () => {
+    const t = syncPending[0];
+    if (!t || syncBusy) return;
+    try { await resolveSyncTrack(t); } catch (_) { /* stays pending */ }
+    renderSyncPrompt();
+  });
+
+  syncAddBtn.addEventListener("click", async () => {
+    const t = syncPending[0];
+    if (!t || syncBusy) return;
+    syncBusy = true;
+    syncAddBtn.disabled = syncSkipBtn.disabled = true;
+    syncMsg.classList.remove("error");
+    syncMsg.textContent = "Downloading\u2026";
+    try {
+      const { job_id } = await api("POST", "/api/download", { url: t.url, mode: "track" });
+      let job;
+      do {
+        await new Promise((r) => setTimeout(r, 700));
+        job = await api("GET", `/api/download/${job_id}`);
+        if (job.status === "downloading" && job.percent) {
+          syncMsg.textContent = job.percent.startsWith("Converting") ? job.percent : `Downloading ${job.percent}`;
+        }
+      } while (job.status === "downloading");
+      if (job.status !== "done") throw new Error(job.error || "Download failed");
+      await resolveSyncTrack(t);
+      syncBusy = false;
+      await loadLibrary();
+      if (state.view.type === "library") renderView();
+    } catch (err) {
+      syncBusy = false;
+      renderSyncPrompt();
+      syncMsg.textContent = err.message;
+      syncMsg.classList.add("error");
+      return;
+    }
+    renderSyncPrompt();
+  });
+
+  syncSaveBtn.addEventListener("click", async () => {
+    const url = syncUrlInput.value.trim();
+    syncSaveBtn.disabled = true;
+    try {
+      state.settings = await api("POST", "/api/settings", { spotify_sync_url: url });
+      if ((state.settings.spotify_sync_url || "") !== url) {
+        syncStatusEl.classList.add("error");
+        syncStatusEl.textContent = "That doesn't look like an open.spotify.com playlist link.";
+      } else {
+        syncStatusEl.classList.remove("error");
+        syncStatusEl.textContent = url ? "Saved. Checking\u2026" : "Watching is off.";
+        syncPending = [];
+        renderSyncPrompt();
+        if (url) setTimeout(refreshSync, 3000);
+      }
+    } catch (err) {
+      syncStatusEl.classList.add("error");
+      syncStatusEl.textContent = err.message;
+    }
+    syncSaveBtn.disabled = false;
+  });
+
+  setInterval(refreshSync, 20000);
+
   // ---------------- init ----------------
 
   async function init() {
@@ -3359,6 +3476,8 @@
     }
     applyAccentColor(state.settings.accent_color);
     idleTimeoutInput.value = state.settings.idle_timeout_minutes;
+    syncUrlInput.value = state.settings.spotify_sync_url || "";
+    refreshSync();
     normalizeToggle.checked = state.settings.normalize_volume !== false;
     syncTransitionControls();
     try {

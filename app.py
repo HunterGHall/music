@@ -23,6 +23,7 @@ PLAYLISTS_FILE = DATA_DIR / "playlists.json"
 STATS_FILE = DATA_DIR / "stats.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 SOURCES_FILE = DATA_DIR / "sources.json"
+SYNC_FILE = DATA_DIR / "spotify_sync.json"    # watched-playlist state: seen + pending tracks
 LOUDNESS_FILE = DATA_DIR / "loudness.json"
 META_FILE = DATA_DIR / "metadata.json"        # user-edited title/artist per track
 PLAYER_STATE_FILE = DATA_DIR / "player_state.json"
@@ -37,6 +38,7 @@ DEFAULT_SETTINGS = {
     "transition_mode": "gapless",   # off | gapless | crossfade
     "crossfade_seconds": 5,
     "lyrics_enabled": True,
+    "spotify_sync_url": "",         # Spotify playlist watched for new songs ("" = off)
 }
 TARGET_LUFS = -14.0  # what every track is levelled to (streaming-service norm)
 STATIC_DIR = BASE_DIR / "static"
@@ -1416,6 +1418,11 @@ def api_update_settings():
                     settings["crossfade_seconds"] = seconds
             except (TypeError, ValueError):
                 pass
+        if isinstance(body.get("spotify_sync_url"), str):
+            sync_url = body["spotify_sync_url"].strip()
+            if not sync_url or (_is_spotify_playlist_url(sync_url) and "open.spotify.com" in sync_url):
+                settings["spotify_sync_url"] = sync_url
+                _sync_wake.set()
         if "idle_timeout_minutes" in body:
             try:
                 minutes = float(body["idle_timeout_minutes"])
@@ -1425,6 +1432,137 @@ def api_update_settings():
                 pass
         _save_settings(settings)
     return jsonify(settings)
+
+
+# ---------------- spotify playlist watch ----------------
+# Every SYNC_INTERVAL seconds the watched Spotify playlist is re-read. Any track
+# that isn't in the library and hasn't been seen before becomes "pending" and
+# the UI asks whether to add it. The first read after choosing a playlist only
+# records what's already there, so you aren't asked about its whole backlog.
+
+SYNC_INTERVAL = 60
+_sync_wake = threading.Event()
+
+
+def _load_sync():
+    if SYNC_FILE.is_file():
+        try:
+            data = json.loads(SYNC_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {}
+
+
+def _save_sync(state):
+    DATA_DIR.mkdir(exist_ok=True)
+    SYNC_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def _sync_check():
+    """One pass over the watched playlist. Network work happens outside the lock."""
+    url = _load_settings().get("spotify_sync_url", "")
+    if not url:
+        return
+    try:
+        _title, track_urls = _fetch_spotify_playlist_tracks(url)
+        error = None if track_urls else "Could not read any tracks from that playlist."
+    except Exception as e:
+        track_urls, error = [], f"Could not reach Spotify: {e}"
+
+    with _lock:
+        state = _load_sync()
+        if state.get("url") != url:
+            state = {"url": url}
+        state["last_checked"] = time.time()
+        state["error"] = error
+        _save_sync(state)
+        if error:
+            return
+        first_run = "seen" not in state
+        seen = set(state.get("seen", []))
+        pending = state.get("pending", [])
+        sources = _load_sources()
+
+    ids = [u.rsplit("/", 1)[-1] for u in track_urls]
+    if first_run:
+        seen.update(ids)
+        new_ids = []
+    else:
+        queued = {p["id"] for p in pending}
+        new_ids = []
+        for tid in ids:
+            if tid in seen or tid in queued:
+                continue
+            name = sources.get("spotify:" + tid)
+            if name and (LIBRARY_DIR / name).is_file():
+                seen.add(tid)  # already downloaded some other way
+            else:
+                new_ids.append(tid)
+
+    found = []
+    for tid in new_ids:
+        track_url = f"https://open.spotify.com/track/{tid}"
+        try:
+            title, artist, cover = _fetch_spotify_metadata(track_url)
+        except Exception:
+            title, artist, cover = "", "", None
+        found.append({"id": tid, "url": track_url, "title": title or "Unknown title",
+                      "artist": artist, "cover": cover})
+
+    with _lock:
+        state = _load_sync()
+        if state.get("url") != url:
+            return  # playlist changed while we were reading; next pass starts over
+        state["seen"] = sorted(set(state.get("seen", [])) | seen)
+        known = {p["id"] for p in state.get("pending", [])}
+        state["pending"] = state.get("pending", []) + [f for f in found if f["id"] not in known]
+        state["last_checked"] = time.time()
+        state["error"] = None
+        _save_sync(state)
+
+
+def _sync_loop():
+    while True:
+        try:
+            _sync_check()
+        except Exception as e:
+            print("Spotify sync failed:", e)
+        _sync_wake.wait(SYNC_INTERVAL)
+        _sync_wake.clear()
+
+
+def _start_sync_thread():
+    threading.Thread(target=_sync_loop, daemon=True).start()
+
+
+@app.get("/api/sync")
+def api_sync_status():
+    with _lock:
+        url = _load_settings().get("spotify_sync_url", "")
+        state = _load_sync()
+    if not url or state.get("url") != url:
+        return jsonify({"url": url, "pending": [], "last_checked": None, "error": None})
+    return jsonify({"url": url, "pending": state.get("pending", []),
+                    "last_checked": state.get("last_checked"), "error": state.get("error")})
+
+
+@app.post("/api/sync/check")
+def api_sync_check():
+    _sync_wake.set()
+    return "", 204
+
+
+@app.post("/api/sync/<track_id>/resolve")
+def api_sync_resolve(track_id):
+    """Take a pending track off the list (it was added, or the user skipped it)."""
+    with _lock:
+        state = _load_sync()
+        state["pending"] = [p for p in state.get("pending", []) if p["id"] != track_id]
+        state["seen"] = sorted(set(state.get("seen", [])) | {track_id})
+        _save_sync(state)
+    return "", 204
 
 
 # ---------------- routes: playlists ----------------
@@ -1755,6 +1893,7 @@ def api_download_status(job_id):
 
 def run_web(port=8734):
     _scan_loudness_async()
+    _start_sync_thread()
     app.run(host="127.0.0.1", port=port, debug=False, use_reloader=False)
 
 

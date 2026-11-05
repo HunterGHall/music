@@ -1924,3 +1924,31 @@ body.dragging-songs .playlist-row { outline: 1px dashed rgba(var(--accent-rgb), 
 *::-webkit-scrollbar { width: 8px; height: 8px; }
 *::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
 *::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- Spotify playlist watch ---- */
+.settings-item-stack { flex-direction: column; align-items: stretch; gap: 10px; }
+.sync-url-row { width: 100%; gap: 8px; }
+.sync-url-row input[type="text"] {
+  flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px;
+  background: var(--bg); border: 1px solid var(--border); color: var(--text); font: inherit;
+}
+.sync-url-row input[type="text"]:focus { outline: none; border-color: var(--accent); }
+.sync-status { color: var(--text-faint); }
+.sync-status.error { color: #ff6b6b; }
+
+.sync-prompt {
+  position: fixed; right: 20px; bottom: 100px; z-index: 60; width: 340px;
+  display: flex; gap: 12px; padding: 12px; border-radius: 12px;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+.sync-prompt[hidden] { display: none; }
+.sync-prompt img { width: 64px; height: 64px; border-radius: 8px; object-fit: cover; background: var(--bg-hover); flex: none; }
+.sync-prompt img:not([src]), .sync-prompt img[src=""] { visibility: hidden; }
+.sync-prompt-body { min-width: 0; flex: 1; }
+.sync-prompt-label { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.04em; }
+.sync-prompt-title { font-weight: 600; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sync-prompt-artist { font-size: 12.5px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sync-prompt-msg { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+.sync-prompt-msg.error { color: #ff6b6b; }
+.sync-prompt-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
