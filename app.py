@@ -1836,7 +1836,8 @@ def _new_job(kind):
     return {
         "kind": kind,                # "track" | "playlist"
         "status": "downloading",     # downloading | done | error
-        "percent": "",
+        "percent": "",               # label for the file being fetched: "42.0%" / "Converting..." / ...
+        "fraction": 0.0,             # 0..1 progress of the file being fetched (numeric, for the bar)
         "current_title": None,
         "title": None,               # final title, for a "track" job
         "as_playlist": True,         # False when a playlist link was imported as plain songs
@@ -1881,7 +1882,10 @@ def _run_playlist_import(url, job, progress_hook, as_playlist=True):
                 continue
             add_to_playlist(playlist, path)
             if not duplicate:
+                job["percent"] = "Fetching lyrics..."
                 _fetch_lyrics_with_song(path)
+            job["fraction"] = 0.0
+            job["percent"] = ""
             (job["skipped"] if duplicate else job["added"]).append({"id": path.name, "title": track_title})
     else:
         playlist = _create_playlist_record("Importing playlist...") if as_playlist else None
@@ -1891,7 +1895,10 @@ def _run_playlist_import(url, job, progress_hook, as_playlist=True):
 
         def on_track(path, title):
             add_to_playlist(playlist, path)
+            job["percent"] = "Fetching lyrics..."
             _fetch_lyrics_with_song(path)
+            job["fraction"] = 0.0
+            job["percent"] = ""
             job["added"].append({"id": path.name, "title": title})
 
         def on_existing(path):
@@ -1923,7 +1930,13 @@ def api_download():
 
     def progress_hook(d):
         if d["status"] == "downloading":
-            job["percent"] = d.get("_percent_str", "").strip()
+            done_bytes = d.get("downloaded_bytes") or 0
+            total_bytes = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            if total_bytes:
+                job["fraction"] = max(0.0, min(1.0, done_bytes / total_bytes))
+                job["percent"] = f"{job['fraction'] * 100:.1f}%"
+            else:
+                job["percent"] = ""  # size unknown: the page shows an indeterminate bar
             info = d.get("info_dict") or {}
             n_entries = info.get("n_entries")
             if n_entries:
@@ -1932,6 +1945,7 @@ def api_download():
             if entry_title:
                 job["current_title"] = entry_title
         elif d["status"] == "finished":
+            job["fraction"] = 1.0
             job["percent"] = "Converting..."
 
     def worker():
@@ -1953,7 +1967,7 @@ def api_download():
                 job["title"] = title
                 if not job["duplicate"]:
                     new_ids = [path.name]
-                    job["current_title"] = "Fetching lyrics..."
+                    job["percent"] = "Fetching lyrics..."
                     _fetch_lyrics_with_song(path)
             job["status"] = "done"
         except Exception as e:

@@ -2240,6 +2240,13 @@
     }[c]));
   }
 
+  // fraction 0..1; indeterminate = a moving bar for when the amount isn't known yet
+  function progressBar(fraction, indeterminate) {
+    if (indeterminate) return '<div class="progress-bar indeterminate"><div></div></div>';
+    const pct = Math.round(Math.max(0, Math.min(1, fraction || 0)) * 100);
+    return `<div class="progress-bar"><div style="width:${pct}%"></div></div>`;
+  }
+
   function setAddStatus(html) {
     addStatusEl.innerHTML = html;
   }
@@ -2272,11 +2279,9 @@
           return;
         }
         if (job.status === "downloading") {
-          const label = job.percent
-            ? (job.percent.startsWith("Converting") ? job.percent : `Downloading ${job.percent}`)
-            : "Downloading…";
-          const pct = parseFloat(job.percent);
-          const bar = isFinite(pct) ? `<div class="progress-bar"><div style="width:${Math.min(100, pct)}%"></div></div>` : "";
+          const working = job.percent && !/^\d/.test(job.percent);  // "Converting...", "Fetching lyrics..."
+          const label = working ? job.percent : (job.percent ? `Downloading ${job.percent}` : "Downloading…");
+          const bar = working ? progressBar(1, true) : progressBar(job.fraction, !job.percent);
           setAddStatus(`<div class="progress-line">${escapeHtml(label)}</div>${bar}`);
           setTimeout(tick, 500);
         } else if (job.status === "done") {
@@ -2362,9 +2367,15 @@
     if (total) line += ` &mdash; ${job.added.length + skipped.length}/${total}`;
     if (job.status === "downloading" && job.current_title) line += ` &mdash; now: ${escapeHtml(job.current_title)}`;
     parts.push(`<div class="progress-line">${line}</div>`);
-    if (total && job.status === "downloading") {
-      const pct = Math.round(((job.added.length + skipped.length + job.failed.length) / total) * 100);
-      parts.push(`<div class="progress-bar"><div style="width:${pct}%"></div></div>`);
+    if (job.status === "downloading") {
+      // finished songs plus how far along the one being fetched is (held just
+      // under a full song so it never runs ahead of the count)
+      const working = job.percent && !/^\d/.test(job.percent);
+      const current = working ? 0.95 : 0.95 * (job.fraction || 0);
+      parts.push(total ? progressBar((done + current) / total) : progressBar(0, true));
+      if (job.percent) parts.push(`<div class="progress-sub">${escapeHtml(working ? job.percent : `Downloading ${job.percent}`)}</div>`);
+    } else if (job.status === "done") {
+      parts.push(progressBar(1));
     }
     if (job.added.length) {
       parts.push(`<div class="progress-added">Added: ${job.added.map((t) => escapeHtml(t.title)).join(", ")}</div>`);
