@@ -657,6 +657,21 @@ def _download_youtube(url, hook):
     return final, display_name
 
 
+def _youtube_playlist_count(url):
+    """How many videos a YouTube playlist link holds (0 if it can't be told),
+    from a quick listing that downloads nothing - so progress has a real total."""
+    try:
+        import yt_dlp
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "extract_flat": "in_playlist",
+                               "ignoreerrors": True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+        entries = (info or {}).get("entries")
+        return len([e for e in entries if e]) if entries is not None else 0
+    except Exception as e:
+        log.warning("Couldn't count the playlist's videos: %s", e)
+        return 0
+
+
 def _download_youtube_playlist(url, progress_hook, on_track, on_existing):
     """Downloads every video in a YouTube playlist URL. `on_track(path,
     title)` fires once per track as soon as it finishes converting, so the
@@ -1907,6 +1922,7 @@ def _run_playlist_import(url, job, progress_hook, as_playlist=True):
             if not any(s["id"] == path.name for s in job["skipped"]):
                 job["skipped"].append({"id": path.name, "title": path.stem})
 
+        job["total"] = _youtube_playlist_count(url)
         playlist_title = _download_youtube_playlist(url, progress_hook, on_track, on_existing)
         final_name = playlist_title or "Imported Playlist"
         if playlist:
@@ -1940,7 +1956,8 @@ def api_download():
             info = d.get("info_dict") or {}
             n_entries = info.get("n_entries")
             if n_entries:
-                job["total"] = n_entries
+                # per-video info often reports 1 here, so never shrink the total
+                job["total"] = max(job["total"], n_entries)
             entry_title = info.get("title")
             if entry_title:
                 job["current_title"] = entry_title

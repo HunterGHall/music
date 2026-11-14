@@ -2358,7 +2358,7 @@
   function renderPlaylistProgress(job) {
     const skipped = job.skipped || [];
     const done = job.added.length + skipped.length + job.failed.length;
-    const total = job.total || done;
+    const total = Math.max(job.total || 0, done);
     const parts = [];
     const asPlaylist = job.as_playlist !== false;
     let line = asPlaylist
