@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -62,6 +63,67 @@ _lock = threading.Lock()
 _jobs = {}  # job_id -> dict, see _new_job()
 
 
+# ---------------- logging + safe JSON storage ----------------
+# Everything the app keeps lives in small JSON files. Writes go to a temp file
+# that is then swapped into place, so a crash or power cut can never leave a
+# half-written file; the previous good copy is kept as <name>.bak, and a file
+# that turns out to be unreadable is set aside and the backup used instead.
+
+log = logging.getLogger("music")
+
+
+def _setup_logging():
+    if log.handlers:
+        return
+    log.setLevel(logging.INFO)
+    try:
+        DATA_DIR.mkdir(exist_ok=True)
+        from logging.handlers import RotatingFileHandler
+        handler = RotatingFileHandler(DATA_DIR / "app.log", maxBytes=500_000, backupCount=2, encoding="utf-8")
+    except OSError:
+        handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    log.addHandler(handler)
+
+
+_setup_logging()
+
+
+def _write_json(path, data, indent=2, backup=True):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=indent), encoding="utf-8")
+        if backup and path.is_file():
+            try:
+                shutil.copyfile(path, path.with_name(path.name + ".bak"))
+            except OSError as e:
+                log.warning("Couldn't back up %s: %s", path.name, e)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _read_json(path, default):
+    """The JSON stored at path, falling back to its .bak if it's unreadable
+    (the bad file is renamed *.corrupt so it isn't backed up over the good copy)."""
+    bak = path.with_name(path.name + ".bak")
+    for candidate in (path, bak):
+        if not candidate.is_file():
+            continue
+        try:
+            return json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception as e:
+            log.error("Unreadable %s (%s)%s", candidate.name, e,
+                      "; trying its backup" if candidate == path else "")
+            if candidate == path:
+                try:
+                    os.replace(path, path.with_name(f"{path.name}.corrupt"))
+                except OSError:
+                    pass
+    return default
+
+
 # ---------------- library scanning ----------------
 
 def find_track_paths():
@@ -80,7 +142,8 @@ def _ffprobe_duration(path):
             capture_output=True, text=True,
         )
         return float(out.stdout.strip())
-    except Exception:
+    except Exception as e:
+        log.warning("ffprobe couldn't read the length of %s: %s", path.name, e)
         return None
 
 
@@ -98,17 +161,11 @@ def _track_duration(path):
 
 
 def _load_meta():
-    if not META_FILE.is_file():
-        return {}
-    try:
-        return json.loads(META_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    return _read_json(META_FILE, {})
 
 
 def _save_meta(meta):
-    DATA_DIR.mkdir(exist_ok=True)
-    META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    _write_json(META_FILE, meta)
 
 
 def _name_fields(path, meta=None):
@@ -188,17 +245,11 @@ def _sanitize_filename(name):
 # ---------------- play-count stats ----------------
 
 def _load_stats():
-    if not STATS_FILE.is_file():
-        return {}
-    try:
-        return json.loads(STATS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    return _read_json(STATS_FILE, {})
 
 
 def _save_stats(stats):
-    DATA_DIR.mkdir(exist_ok=True)
-    STATS_FILE.write_text(json.dumps(stats, indent=2), encoding="utf-8")
+    _write_json(STATS_FILE, stats)
 
 
 def _record_play(track_id):
@@ -218,12 +269,7 @@ _loudness_lock = threading.Lock()  # one ffmpeg measurement at a time
 
 
 def _load_loudness():
-    if not LOUDNESS_FILE.is_file():
-        return {}
-    try:
-        return json.loads(LOUDNESS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    return _read_json(LOUDNESS_FILE, {})
 
 
 def _measure_loudness(path):
@@ -242,7 +288,8 @@ def _measure_loudness(path):
         if not lufs or not peak:
             return None
         return float(lufs[-1]), float(peak[-1])
-    except Exception:
+    except Exception as e:
+        log.warning("Loudness measurement failed for %s: %s", path.name, e)
         return None
 
 
@@ -276,8 +323,7 @@ def _ensure_loudness(path):
             return None
         loudness[path.name] = {"mtime": path.stat().st_mtime,
                                "lufs": measured[0], "peak": measured[1]}
-        DATA_DIR.mkdir(exist_ok=True)
-        LOUDNESS_FILE.write_text(json.dumps(loudness, indent=2), encoding="utf-8")
+        _write_json(LOUDNESS_FILE, loudness)
         return _gain_db_from(loudness[path.name])
 
 
@@ -305,12 +351,7 @@ def _scan_loudness_async():
 # library filename it was downloaded as, so re-adding the same link is a no-op.
 
 def _load_sources():
-    if not SOURCES_FILE.is_file():
-        return {}
-    try:
-        return json.loads(SOURCES_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    return _read_json(SOURCES_FILE, {})
 
 
 def _source_key(url):
@@ -343,42 +384,31 @@ def _record_source(key, filename):
     with _lock:
         sources = _load_sources()
         sources[key] = filename
-        DATA_DIR.mkdir(exist_ok=True)
-        SOURCES_FILE.write_text(json.dumps(sources, indent=2), encoding="utf-8")
+        _write_json(SOURCES_FILE, sources)
 
 
 # ---------------- settings ----------------
 
 def _load_settings():
     settings = dict(DEFAULT_SETTINGS)
-    if SETTINGS_FILE.is_file():
-        try:
-            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-            settings.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
-        except Exception:
-            pass
+    data = _read_json(SETTINGS_FILE, {})
+    if isinstance(data, dict):
+        settings.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
     return settings
 
 
 def _save_settings(settings):
-    DATA_DIR.mkdir(exist_ok=True)
-    SETTINGS_FILE.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    _write_json(SETTINGS_FILE, settings)
 
 
 # ---------------- playlists persistence ----------------
 
 def _load_playlists():
-    if not PLAYLISTS_FILE.is_file():
-        return []
-    try:
-        return json.loads(PLAYLISTS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return []
+    return _read_json(PLAYLISTS_FILE, [])
 
 
 def _save_playlists(playlists):
-    DATA_DIR.mkdir(exist_ok=True)
-    PLAYLISTS_FILE.write_text(json.dumps(playlists, indent=2), encoding="utf-8")
+    _write_json(PLAYLISTS_FILE, playlists)
 
 
 def _find_playlist(playlists, pid):
@@ -429,66 +459,117 @@ def _download_image(url, dest_path):
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = resp.read()
         dest_path.write_bytes(data)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Couldn't download cover image: %s", e)
+
+
+_RETRY_CODES = (429, 500, 502, 503, 504)
+
+
+def _http_get(url, timeout=15, retries=3):
+    """GET with a few retries and backoff for the hiccups that are normal on
+    the open web (timeouts, rate limiting, brief 5xx). Returns bytes."""
+    last = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept-Language": "en"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            if e.code not in _RETRY_CODES:
+                raise
+            last = e
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last = e
+        if attempt < retries - 1:
+            time.sleep(1.5 * 2 ** attempt)
+    raise last
+
+
+def _spotify_oembed(url):
+    return json.loads(_http_get("https://open.spotify.com/oembed?url=" + urllib.parse.quote(url, safe="")).decode("utf-8"))
+
+
+def _spotify_embed_data(kind, spotify_id):
+    """(raw html, parsed page data or None) of a Spotify embed page. The page
+    carries its data as JSON in a script tag; reading that is sturdier than
+    pattern-matching the markup, with the patterns kept as the fallback."""
+    html = _http_get(f"https://open.spotify.com/embed/{kind}/{spotify_id}").decode("utf-8", errors="ignore")
+    m = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
+    data = None
+    if m:
+        try:
+            data = json.loads(m.group(1))
+        except ValueError:
+            log.warning("Spotify embed page had unreadable JSON")
+    return html, data
+
+
+def _walk_json(node):
+    """Every dict nested anywhere in node, in document order."""
+    if isinstance(node, dict):
+        yield node
+        for v in node.values():
+            yield from _walk_json(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _walk_json(v)
 
 
 def _fetch_spotify_metadata(url):
     """(title, artist, cover_url) for a Spotify track link, via Spotify's
-    public oEmbed endpoint (no API credentials needed) plus a light scrape
+    public oEmbed endpoint (no API credentials needed) plus a light read
     of the embed page for the artist name."""
-    oembed_url = "https://open.spotify.com/oembed?url=" + urllib.parse.quote(url, safe="")
-    req = urllib.request.Request(oembed_url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    data = _spotify_oembed(url)
     title = data.get("title", "")
     cover_url = data.get("thumbnail_url")
 
     artist = ""
-    match = re.search(r"open\.spotify\.com/track/([A-Za-z0-9]+)", url)
+    match = re.search(r"open\.spotify\.com/(?:intl-[a-z]+/)?track/([A-Za-z0-9]+)", url)
     if match:
         try:
-            embed_req = urllib.request.Request(
-                f"https://open.spotify.com/embed/track/{match.group(1)}",
-                headers={"User-Agent": USER_AGENT},
-            )
-            with urllib.request.urlopen(embed_req, timeout=15) as resp:
-                html = resp.read().decode("utf-8", errors="ignore")
-            artist_match = re.search(r'"artists":\[\{"name":"([^"]+)"', html)
-            if artist_match:
-                artist = artist_match.group(1)
-        except Exception:
-            pass
+            html, page = _spotify_embed_data("track", match.group(1))
+            for d in _walk_json(page):
+                artists = d.get("artists")
+                if isinstance(artists, list) and artists and isinstance(artists[0], dict) and artists[0].get("name"):
+                    artist = artists[0]["name"]
+                    break
+                if isinstance(d.get("subtitle"), str) and str(d.get("uri", "")).startswith("spotify:track:"):
+                    artist = d["subtitle"]
+                    break
+            if not artist:
+                artist_match = re.search(r'"artists":\[\{"name":"([^"]+)"', html)
+                if artist_match:
+                    artist = artist_match.group(1)
+            if not artist:
+                log.warning("Spotify track page had no artist - its layout may have changed")
+        except Exception as e:
+            log.warning("Couldn't read the artist for %s: %s", url, e)
     return title, artist, cover_url
 
 
 def _fetch_spotify_playlist_tracks(url):
     """(playlist_title, [track_url, ...]) for a Spotify playlist link.
-    oEmbed gives the playlist's own title; the individual track URLs are
-    scraped from the embed page's track-list JSON the same way
-    _fetch_spotify_metadata() scrapes a single track's artist - undocumented,
-    but stable enough for this."""
-    oembed_url = "https://open.spotify.com/oembed?url=" + urllib.parse.quote(url, safe="")
-    req = urllib.request.Request(oembed_url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    oEmbed gives the playlist's own title; the track URLs come from the embed
+    page's data (undocumented, so read two independent ways). Note the embed
+    page only lists the first ~100 tracks of a very long playlist."""
+    data = _spotify_oembed(url)
     title = data.get("title", "")
 
     track_urls = []
-    match = re.search(r"open\.spotify\.com/playlist/([A-Za-z0-9]+)", url)
+    match = re.search(r"open\.spotify\.com/(?:intl-[a-z]+/)?playlist/([A-Za-z0-9]+)", url)
     if match:
-        embed_req = urllib.request.Request(
-            f"https://open.spotify.com/embed/playlist/{match.group(1)}",
-            headers={"User-Agent": USER_AGENT},
-        )
-        with urllib.request.urlopen(embed_req, timeout=15) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-        seen = set()
-        for m in re.finditer(r'"uri":"spotify:track:([A-Za-z0-9]+)"', html):
-            track_id = m.group(1)
-            if track_id not in seen:
-                seen.add(track_id)
-                track_urls.append(f"https://open.spotify.com/track/{track_id}")
+        html, page = _spotify_embed_data("playlist", match.group(1))
+        ids = []
+        for d in _walk_json(page):
+            uri = d.get("uri")
+            if isinstance(uri, str) and uri.startswith("spotify:track:"):
+                ids.append(uri.rsplit(":", 1)[-1])
+        if not ids:  # fall back to scanning the raw page
+            ids = re.findall(r'"uri":"spotify:track:([A-Za-z0-9]+)"', html)
+        if not ids:
+            log.warning("Spotify playlist page had no tracks - its layout may have changed")
+        track_urls = [f"https://open.spotify.com/track/{t}" for t in dict.fromkeys(ids)]
     return title, track_urls
 
 
@@ -764,9 +845,8 @@ def api_delete_all_tracks():
             pl["track_ids"] = []
         _save_playlists(playlists)
         _save_stats({})
-        DATA_DIR.mkdir(exist_ok=True)
-        SOURCES_FILE.write_text("{}", encoding="utf-8")
-        LOUDNESS_FILE.write_text("{}", encoding="utf-8")
+        _write_json(SOURCES_FILE, {})
+        _write_json(LOUDNESS_FILE, {})
         _save_meta({})
     shutil.rmtree(LYRICS_DIR, ignore_errors=True)
     return jsonify({"deleted": deleted})
@@ -827,9 +907,7 @@ def _delete_tracks(track_ids):
     with _loudness_lock:
         loudness = _load_loudness()
         if any(t in loudness for t in ids):
-            LOUDNESS_FILE.write_text(
-                json.dumps({k: v for k, v in loudness.items() if k not in ids}, indent=2),
-                encoding="utf-8")
+            _write_json(LOUDNESS_FILE, {k: v for k, v in loudness.items() if k not in ids})
     return deleted
 
 
@@ -992,15 +1070,14 @@ def _lyrics_for(path, refresh=False):
                          and abs(_track_duration(path) - matched) > LYRICS_EXACT_SECONDS)
             if cached["query"] == query and not expired and not unchecked:
                 return {**result, "offset": cached.get("offset", 0)}
-        except Exception:
-            pass  # unreadable cache - just look it up again
+        except Exception as e:
+            log.warning("Unreadable lyrics cache for %s (%s); looking it up again", path.name, e)
 
     result = _fetch_lyrics(title, artist, _track_duration(path))
     with _lock:
-        LYRICS_DIR.mkdir(parents=True, exist_ok=True)
         # a fresh lookup may be a different edit, so any saved timing nudge starts over
-        cache_file.write_text(json.dumps({"query": query, "fetched": time.time(), "offset": 0, "result": result}),
-                              encoding="utf-8")
+        _write_json(cache_file, {"query": query, "fetched": time.time(), "offset": 0, "result": result},
+                    indent=None, backup=False)
     return {**result, "offset": 0}
 
 
@@ -1022,7 +1099,7 @@ def api_lyrics_offset(track_id):
         except Exception:
             return jsonify({"error": "No lyrics saved for this song"}), 404
         cached["offset"] = offset
-        cache_file.write_text(json.dumps(cached), encoding="utf-8")
+        _write_json(cache_file, cached, indent=None, backup=False)
     return jsonify({"offset": offset})
 
 
@@ -1048,8 +1125,8 @@ def _fetch_lyrics_with_song(path):
         return
     try:
         _lyrics_for(path)
-    except Exception:
-        pass
+    except Exception as e:
+        log.info("Lyrics lookup failed for %s: %s", path.name, e)
 
 
 def _prefetch_lyrics_async(track_ids):
@@ -1233,8 +1310,7 @@ def api_merge_duplicates():
             removed.extend(drop)
         _save_playlists(playlists)
         _save_stats(stats)
-        DATA_DIR.mkdir(exist_ok=True)
-        SOURCES_FILE.write_text(json.dumps(sources, indent=2), encoding="utf-8")
+        _write_json(SOURCES_FILE, sources)
 
     deleted = _delete_tracks(removed) if removed else 0
     return jsonify({"removed": len(removed), "deleted": deleted})
@@ -1288,7 +1364,8 @@ def _suggest_name(source_key, title, artist):
     if source_key:
         try:
             real = _real_names_from_source(source_key)
-        except Exception:
+        except Exception as e:
+            log.warning("Couldn't read original names for %s: %s", source_key, e)
             real = None
         if real:
             candidates.append((real[0], real[1], "source"))
@@ -1333,6 +1410,7 @@ def _scan_names(job):
             job["checked"] += 1
         job["status"] = "done"
     except Exception as e:
+        log.exception("Name scan failed")
         job.update(status="error", error=str(e))
     job["current"] = None
 
@@ -1381,12 +1459,8 @@ def api_batch_meta():
 
 @app.get("/api/state")
 def api_get_state():
-    if not PLAYER_STATE_FILE.is_file():
-        return jsonify({})
-    try:
-        return jsonify(json.loads(PLAYER_STATE_FILE.read_text(encoding="utf-8")))
-    except Exception:
-        return jsonify({})
+    state = _read_json(PLAYER_STATE_FILE, {})
+    return jsonify(state if isinstance(state, dict) else {})
 
 
 @app.post("/api/state")
@@ -1397,8 +1471,7 @@ def api_save_state():
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
         return jsonify({"error": "Object required"}), 400
-    DATA_DIR.mkdir(exist_ok=True)
-    PLAYER_STATE_FILE.write_text(json.dumps(body), encoding="utf-8")
+    _write_json(PLAYER_STATE_FILE, body, indent=None, backup=False)
     return "", 204
 
 
@@ -1457,19 +1530,12 @@ _sync_wake = threading.Event()
 
 
 def _load_sync():
-    if SYNC_FILE.is_file():
-        try:
-            data = json.loads(SYNC_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return data
-        except Exception:
-            pass
-    return {}
+    data = _read_json(SYNC_FILE, {})
+    return data if isinstance(data, dict) else {}
 
 
 def _save_sync(state):
-    DATA_DIR.mkdir(exist_ok=True)
-    SYNC_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    _write_json(SYNC_FILE, state)
 
 
 def _sync_check():
@@ -1481,6 +1547,7 @@ def _sync_check():
         _title, track_urls = _fetch_spotify_playlist_tracks(url)
         error = None if track_urls else "Could not read any tracks from that playlist."
     except Exception as e:
+        log.warning("Spotify sync: couldn't read the playlist: %s", e)
         track_urls, error = [], f"Could not reach Spotify: {e}"
 
     with _lock:
@@ -1518,7 +1585,8 @@ def _sync_check():
         track_url = f"https://open.spotify.com/track/{tid}"
         try:
             title, artist, cover = _fetch_spotify_metadata(track_url)
-        except Exception:
+        except Exception as e:
+            log.warning("Spotify sync: no metadata for %s: %s", tid, e)
             title, artist, cover = "", "", None
         found.append({"id": tid, "url": track_url, "title": title or "Unknown title",
                       "artist": artist, "cover": cover})
@@ -1540,7 +1608,7 @@ def _sync_loop():
         try:
             _sync_check()
         except Exception as e:
-            print("Spotify sync failed:", e)
+            log.exception("Spotify sync failed: %s", e)
         _sync_wake.wait(SYNC_INTERVAL)
         _sync_wake.clear()
 
@@ -1808,6 +1876,7 @@ def _run_playlist_import(url, job, progress_hook, as_playlist=True):
                 path, track_title, duplicate = _download_spotify(track_url, progress_hook)
                 job["current_title"] = track_title
             except Exception as e:
+                log.warning("Download failed for %s: %s", track_url, e)
                 job["failed"].append({"title": track_url, "error": str(e)})
                 continue
             add_to_playlist(playlist, path)
@@ -1888,6 +1957,7 @@ def api_download():
                     _fetch_lyrics_with_song(path)
             job["status"] = "done"
         except Exception as e:
+            log.exception("Download job failed for %s", url)
             job.update(status="error", error=str(e))
         if mode == "playlist":
             new_ids = [item["id"] for item in job["added"]]
