@@ -1040,6 +1040,18 @@ def api_track_lyrics(track_id):
         return jsonify({"status": "error", "message": "Couldn't reach the lyrics service."})
 
 
+def _fetch_lyrics_with_song(path):
+    """Fetches (and caches) a freshly downloaded song's lyrics as part of its
+    download, so they're there - offline included - from the first play.
+    Never raises: a failure just means the lyrics load on demand later."""
+    if not _load_settings().get("lyrics_enabled", True):
+        return
+    try:
+        _lyrics_for(path)
+    except Exception:
+        pass
+
+
 def _prefetch_lyrics_async(track_ids):
     """After an import, looks the new songs' lyrics up in the background so
     they're ready (and work offline) by the first play."""
@@ -1799,6 +1811,8 @@ def _run_playlist_import(url, job, progress_hook, as_playlist=True):
                 job["failed"].append({"title": track_url, "error": str(e)})
                 continue
             add_to_playlist(playlist, path)
+            if not duplicate:
+                _fetch_lyrics_with_song(path)
             (job["skipped"] if duplicate else job["added"]).append({"id": path.name, "title": track_title})
     else:
         playlist = _create_playlist_record("Importing playlist...") if as_playlist else None
@@ -1808,6 +1822,7 @@ def _run_playlist_import(url, job, progress_hook, as_playlist=True):
 
         def on_track(path, title):
             add_to_playlist(playlist, path)
+            _fetch_lyrics_with_song(path)
             job["added"].append({"id": path.name, "title": title})
 
         def on_existing(path):
@@ -1853,7 +1868,7 @@ def api_download():
     def worker():
         LIBRARY_DIR.mkdir(exist_ok=True)
         COVERS_DIR.mkdir(exist_ok=True)
-        new_ids = []  # songs this job actually added, for the lyrics prefetch
+        new_ids = []  # songs this job added, for a catch-up lyrics pass
         try:
             if mode == "playlist":
                 _run_playlist_import(url, job, progress_hook, body.get("as_playlist", True) is not False)
@@ -1869,13 +1884,15 @@ def api_download():
                 job["title"] = title
                 if not job["duplicate"]:
                     new_ids = [path.name]
+                    job["current_title"] = "Fetching lyrics..."
+                    _fetch_lyrics_with_song(path)
             job["status"] = "done"
         except Exception as e:
             job.update(status="error", error=str(e))
         if mode == "playlist":
             new_ids = [item["id"] for item in job["added"]]
         _scan_loudness_async()  # measure whatever was just added
-        _prefetch_lyrics_async(new_ids)
+        _prefetch_lyrics_async(new_ids)  # retries any lookups that failed while offline
 
     threading.Thread(target=worker, daemon=True).start()
     return jsonify({"job_id": job_id}), 202
